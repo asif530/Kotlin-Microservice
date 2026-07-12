@@ -1,0 +1,26 @@
+Make microservices with kotlin.
+They will communicate with grpc.
+Messaging queue is rabbitmq.
+Cache server will be redis.
+Primary database will be postgres. Do migrations using flyway. Seed data
+NoSql database should be mongo. Use mongock for migration
+As this is microservice use api gateway (kong) and service discovery(choose yourself)
+Do distributed logging (Grafana, Prometheus, loki,micrometer, open telemetry etc)
+Implement security at api gateway level.
+Choose a simple domain you can implement.
+Think of an Project architect. Make me an architectural document. Defend why of every decision you made.
+Dont make anything up.
+Dont guess.
+Ask when confused.
+Verify your work.
+
+
+
+
+
+
+
+
+
+
+

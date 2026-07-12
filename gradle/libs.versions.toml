@@ -1,0 +1,29 @@
+[versions]
+# Verified 2026-07-12 against Maven Central / plugins.gradle.org / vendor docs.
+# Flamingock is moving quickly (see catalog-service/notification-service build files) —
+# re-check its version before relying on it beyond the scaffold stage.
+kotlin = "2.4.0"
+spring-boot = "4.0.6"
+spring-dependency-management = "1.1.7"
+protobuf-plugin = "0.10.0"
+protobuf-java = "4.35.1"
+grpc-java = "1.82.1"
+grpc-kotlin = "1.4.3"
+flamingock = "1.4.4"
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
+kotlin-jpa = { id = "org.jetbrains.kotlin.plugin.jpa", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "spring-dependency-management" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobuf-plugin" }
+
+[libraries]
+grpc-kotlin-stub = { module = "io.grpc:grpc-kotlin-stub", version.ref = "grpc-kotlin" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc-java" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc-java" }
+grpc-netty = { module = "io.grpc:grpc-netty", version.ref = "grpc-java" }
+grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc-java" }
+protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf-java" }
+flamingock-core = { module = "io.flamingock:flamingock-core", version.ref = "flamingock" }

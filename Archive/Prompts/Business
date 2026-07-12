@@ -1,0 +1,7 @@
+As a project owner and business analyst write down business.
+Business should be concrete.
+There will be no change in business rules going forward.
+No need to think of technical implementation.
+Think of edge cases. Not just happy path.
+As we already determined the microservices, define and lock business requirements, responsibility of those services.
+

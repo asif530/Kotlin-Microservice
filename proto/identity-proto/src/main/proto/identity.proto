@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package minimart.identity.v1;
+
+option java_multiple_files = true;
+option java_package = "com.minimart.identity.grpc";
+
+// Business responsibility: identity-service is the sole authority on account
+// existence and status. See Archive/BusinessRules/BUSINESS_RULES.md §3.
+service IdentityService {
+  // Used by order-service to confirm the buyer exists and is Active (ORD-001).
+  rpc GetUser(GetUserRequest) returns (UserResponse);
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message UserResponse {
+  string user_id = 1;
+  string email = 2;
+  string full_name = 3;
+  bool active = 4;
+}

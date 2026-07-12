@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package minimart.catalog.v1;
+
+option java_multiple_files = true;
+option java_package = "com.minimart.catalog.grpc";
+
+// Business responsibility: catalog-service is the sole authority on product
+// existence, price, and stock availability. See
+// Archive/BusinessRules/BUSINESS_RULES.md §4 (CAT-011 in particular).
+service CatalogService {
+  // Used by order-service to read a product's current name/price (ORD-005).
+  rpc GetProduct(GetProductRequest) returns (ProductResponse);
+
+  // Used by order-service during checkout. Atomically decrements stock and
+  // reports success/failure; catalog-service is the only writer of stock
+  // (CAT-011). A failed reservation must not leave stock partially decremented.
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+
+  // Used by order-service when a customer cancels an order (ORD-012), to give
+  // the reserved quantity back to available stock.
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+}
+
+message GetProductRequest {
+  string product_id = 1;
+}
+
+message ProductResponse {
+  string product_id = 1;
+  string name = 2;
+  double price = 3;
+  int32 stock_available = 4;
+}
+
+message ReserveStockRequest {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+message ReserveStockResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ReleaseStockRequest {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+message ReleaseStockResponse {
+  bool success = 1;
+  string message = 2;
+}

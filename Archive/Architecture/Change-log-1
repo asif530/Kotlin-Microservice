@@ -1,0 +1,3 @@
+ Added a ReleaseStock RPC to catalog.proto alongside GetProduct/ReserveStock — the architecture
+ doc's sketch only had the first two, but BUSINESS_RULES.md ORD-012 (cancellation releases reserved stock) needs a way for order-service to tell catalog-service to give
+ stock back. Flagging it since it's new, not just a restatement.

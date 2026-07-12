@@ -1,0 +1,18 @@
+The multi-module Gradle project is scaffolded and actually builds
+
+  Structure created:
+  KotlinCrud/
+  ├── gradle/libs.versions.toml       # centralized, verified dependency versions
+  ├── settings.gradle.kts             # includes all 6 modules + JDK auto-provisioning
+  ├── build.gradle.kts                # shared plugin versions, Kotlin toolchain
+  ├── proto/identity-proto/           # identity.proto → grpc-kotlin codegen
+  ├── proto/catalog-proto/            # catalog.proto → grpc-kotlin codegen
+  ├── identity-service/               # Postgres+JPA+Flyway, gRPC server, web
+  ├── catalog-service/                # Mongo+Redis, gRPC server, web
+  ├── order-service/                  # Postgres+JPA+Flyway+Redis+AMQP, gRPC client, web
+  └── notification-service/           # Mongo+AMQP consumer, web
+
+  Q1) Dependency Version management of libraries (Spring dependency management for gradle? What is for kotlin?)
+  Q2) Explain: version-catalog key can't be both a leaf value and a namespace prefix for another dashed key
+  Q3) What is version-catalog key ?
+  Q4)

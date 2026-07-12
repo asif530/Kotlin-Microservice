@@ -1,0 +1,10 @@
+Unresolved:
+catalog-service and notification-service have the Flamingock dependency wired
+(io.flamingock:flamingock-core:1.4.4, confirmed to exist on Maven Central), but not its Gradle plugin/annotation-processor setup — Flamingock's own quick-start docs still
+use unresolved [VERSION] placeholders, so I didn't want to guess a DSL block that might silently not work. There's a comment in both build files pointing at this before
+real @Change migrations get written.
+
+Resolved:
+a version-catalog key can't be both a leaf value and a namespace prefix for another dashed key — grpc collided with grpc-kotlin (→ grpc.kotlin), and protobuf collided with protobuf-plugin. Renamed
+to grpc-java/protobuf-java to fix. Also, this sandbox has no full JDK (only a JRE, no javac), so I added the foojay-resolver-convention plugin + jvmToolchain(21) so Gradle
+provisions its own JDK — this also makes the build reproducible for anyone else running it, not just a local workaround.

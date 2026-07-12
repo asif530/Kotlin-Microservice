@@ -1,0 +1,128 @@
+services:
+
+  # ─── Relational Database ───────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: kotlincrud-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kotlincrud
+      POSTGRES_USER: kotlincrud
+      POSTGRES_PASSWORD: kotlincrud
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kotlincrud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── NoSQL Database ────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:8-jammy
+    container_name: kotlincrud-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: kotlincrud
+      MONGO_INITDB_ROOT_PASSWORD: kotlincrud
+      MONGO_INITDB_DATABASE: kotlincrud
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Message Queue ─────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: kotlincrud-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: kotlincrud
+      RABBITMQ_DEFAULT_PASS: kotlincrud
+      RABBITMQ_DEFAULT_VHOST: kotlincrud
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Cache ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: kotlincrud-redis
+    restart: unless-stopped
+    command: redis-server --requirepass kotlincrud
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "kotlincrud", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Distributed Tracing ───────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: kotlincrud-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+
+  # ─── Metrics Collection ────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: kotlincrud-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - jaeger
+
+  # ─── Metrics Visualization ─────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:12.0.1
+    container_name: kotlincrud-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  mongo_data:
+  rabbitmq_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
