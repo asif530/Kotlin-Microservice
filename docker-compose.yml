@@ -6,13 +6,14 @@ services:
     container_name: kotlincrud-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: kotlincrud
+      POSTGRES_DB: identity        # identity-service; `orders` (order-service) is created by the init script below
       POSTGRES_USER: kotlincrud
       POSTGRES_PASSWORD: kotlincrud
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db-init/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kotlincrud"]
       interval: 10s
@@ -21,17 +22,17 @@ services:
 
   # ─── NoSQL Database ────────────────────────────────────────────────────────
   mongodb:
-    image: mongo:8-jammy
+    image: mongo:8
     container_name: kotlincrud-mongodb
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: kotlincrud
       MONGO_INITDB_ROOT_PASSWORD: kotlincrud
-      MONGO_INITDB_DATABASE: kotlincrud
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+      - ./db-init/mongo:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s

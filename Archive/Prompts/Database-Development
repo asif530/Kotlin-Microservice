@@ -1,0 +1,41 @@
+Stage-1
+Architecture is approved.
+Business is approved.
+Now kickstart this project with database design (sql and nosql) based on Business plan mentioned in Archive/BusinessRules/BUSINESS_RULES.md
+Plan the database design as an Database administrator who emphasise on performance, normalization, replication, search performance, data integrity.
+AS each service will have their own database, design such a way as per business logic so that no coupling exists in database level.
+If data share / duplication is needed, check the business first. Make proper judgement and defend your decision.
+Dont make anything up.
+Dont guess.
+Ask when confused.
+Verify your work.
+Output your design in Archive/Development/Database
+
+Stage-2
+Prepare a database diagram.
+For relational tables show relations
+Better to make individual claude Artifact per service.
+At the end make a total database diagram artifact containing all service.
+Dont make anything up.
+Dont guess.
+Ask when confused.
+
+Stage-3
+Create database and collections for postgres, mongo.
+Generate proper functional dummy data which will resembles all business flow.
+Make business case wise separate data.
+These will not be a part of project.
+Rather a proof that current design works.
+Provide queries to check the data, business scenario based scripts.
+Example:
+Scenario 1: Create an user. User related tables are populated.
+Scenario 2: Create an user. Place an order. User, order, notification and related tables are populated.
+Make data for each scenario based on business rules written in BUSINESS_RULES.md(Archive/BusinessRules/BUSINESS_RULES.md)
+As you have generated some data continue your work with them.
+You are not responsible to execute them in containers.
+User will do it.
+Make a sequence / serial at which user should execute script.
+Dont make anything up.
+Dont guess.
+Ask when confused.
+

@@ -15,4 +15,48 @@ The multi-module Gradle project is scaffolded and actually builds
   Q1) Dependency Version management of libraries (Spring dependency management for gradle? What is for kotlin?)
   Q2) Explain: version-catalog key can't be both a leaf value and a namespace prefix for another dashed key
   Q3) What is version-catalog key ?
-  Q4)
+
+  ---
+
+  A1) The Spring side uses the `io.spring.dependency-management` Gradle plugin (alias
+  `spring-dependency-management` in this project's libs.versions.toml, applied wherever
+  spring-boot is applied). It imports Spring's BOM (bill-of-materials) so you can declare
+  `implementation("org.springframework:spring-web")` without a version — the BOM pins it.
+  It's Spring-specific and only manages Spring-published/managed coordinates.
+
+  Kotlin itself has no equivalent "dependency management" plugin — Kotlin projects use
+  Gradle's own native mechanism instead: Version Catalogs (gradle/libs.versions.toml),
+  which is exactly what this project already does. It's not tied to Spring or Kotlin, it's
+  a Gradle feature: a single TOML file declares versions/libraries/plugins/bundles once,
+  and every module references them via generated type-safe accessors (e.g.
+  `libs.grpc.kotlin.stub`, `libs.plugins.kotlin.jvm`). For BOM-style "one version pins many
+  artifacts" behavior outside Spring (e.g. for grpc or protobuf), you'd use Gradle's
+  `java-platform` plugin or import a third-party BOM with `implementation(platform(...))` —
+  the catalog and platforms complement each other rather than compete.
+
+  A2) Gradle turns every catalog key into a chain of accessor properties by splitting on
+  `-` (and `_`/`.`). So a library key `grpc-kotlin-stub` becomes `libs.grpc.kotlin.stub`,
+  where `grpc` and `grpc.kotlin` become synthetic namespace objects along the way, not
+  real values.
+
+  The conflict described happens when one key is a *complete* alias (a leaf/value) and
+  another key uses that same alias as a *prefix* segment. Example: if this catalog defined
+  both a library called `grpc` (so `libs.grpc` should resolve to a dependency notation) and
+  a library called `grpc-stub` (so `libs.grpc` must also be a namespace holding `.stub`),
+  Gradle can't generate `libs.grpc` as both a leaf property and a container object at once
+  — it fails catalog validation with an error like "... cannot be both a value and a prefix
+  for other dashed names". Looking at the actual libs.versions.toml here, this is why there
+  is no bare `grpc` key — only prefixed ones (`grpc-kotlin-stub`, `grpc-protobuf`,
+  `grpc-stub`, `grpc-netty`, `grpc-services`, and the versions `grpc-java`/`grpc-kotlin`) —
+  so the current catalog is safe. It would only break if someone later added a plain
+  `grpc = "..."` alias.
+
+  A3) A version-catalog key (alias) is the name you give an entry inside one of the four
+  tables in libs.versions.toml — `[versions]`, `[libraries]`, `[bundles]`, `[plugins]` —
+  e.g. `kotlin`, `spring-boot`, `grpc-kotlin-stub` in this project's catalog. Gradle uses
+  the key both as the lookup name in the TOML and as the basis for the generated
+  type-safe Kotlin DSL accessor (`libs.versions.kotlin`, `libs.spring.boot`,
+  `libs.grpc.kotlin.stub`), converting dash/underscore/dot separators into nested
+  `.` property access. Valid keys must match `[a-zA-Z]([a-zA-Z0-9_.-])+`. Because the key
+  doubles as an accessor path, its structure is what creates the leaf-vs-prefix collision
+  described in Q2/A2.

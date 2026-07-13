@@ -1,0 +1,310 @@
+# MiniMart — Database Design
+
+**Status:** Draft v1.0
+**Author role:** Database administrator (this document) — optimizing for performance, normalization, replication, search performance, and data integrity,
+per each service's already-decided datastore.
+**Date:** 2026-07-13
+**Scope:** Physical/logical database design for each of the four services.
+This document introduces **no new business rule and no new architecture decision** — it only decides *how* each service's already-assigned datastore (Postgres for identity/order, MongoDB for catalog/notification — `ARCHITECTURE.md` §9) is designed to satisfy `BUSINESS_RULES.md`. Every table/collection/index below is traceable to a specific rule ID; nothing here that isn't.
+**Inputs read:** `Archive/BusinessRules/BUSINESS_RULES.md` (v1.0, locked), `Archive/Architecture/ARCHITECTURE.md` (§2, §9, §11), `proto/identity-proto`, `proto/catalog-proto`, current `docker-compose.yml`. No source in this repo yet defines an entity or a migration — this is a from-scratch design, not a description of existing code.
+**Note on verification claims:** unlike `ARCHITECTURE.md`, this document did not check any claim against live vendor docs this session. Postgres/MongoDB features cited below (`citext`, `gen_random_uuid()`, `$jsonSchema` validators, single-document atomic updates) are standard, stable features I'm confident are correct as described — not treated as independently re-verified.
+
+---
+
+## 0. Design principles carried over from the architecture document
+
+- **Database-per-service, no exceptions.** No table/collection below has a foreign key, join, or `$lookup` that crosses a service boundary. Every cross-service reference is a plain ID column with no referential-integrity enforcement at the DB level — that's enforced by the owning service at write time (via gRPC), not by the reader's database.
+- **Duplication only where a specific rule requires it**, cited by rule ID, with alternatives explicitly rejected — see §5, the "no coupling" instruction's actual test.
+- **No invented fields.** Every column/field maps to something stated in `BUSINESS_RULES.md`. Where a plausible field wasn't asked for (e.g. a category taxonomy collection, a cancellation-reason field, a default sort order), it is explicitly left out and noted in §7 rather than added.
+- **Money is never a float.** All monetary values are fixed-point (`NUMERIC` in Postgres, `Decimal128` in MongoDB) — binary floating point is documented, replicated data, and it will silently misrepresent totals if used.
+
+---
+
+## 1. identity-service — PostgreSQL, database `identity`
+
+### 1.1 Schema
+
+```sql
+-- V1__create_identity_schema.sql
+CREATE EXTENSION IF NOT EXISTS citext;
+
+CREATE TABLE roles (
+    id    SMALLINT PRIMARY KEY,
+    code  VARCHAR(20) NOT NULL UNIQUE            -- 'ADMIN' | 'CUSTOMER'
+);
+
+CREATE TABLE accounts (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email          CITEXT NOT NULL UNIQUE,       -- ACC-002
+    password_hash  TEXT NOT NULL,                -- ACC-001; hashing algorithm is app-layer, not a DB concern
+    full_name      VARCHAR(200) NOT NULL,        -- ACC-001, ACC-011
+    role_id        SMALLINT NOT NULL REFERENCES roles(id),
+    status         VARCHAR(11) NOT NULL DEFAULT 'ACTIVE'
+                       CHECK (status IN ('ACTIVE', 'DEACTIVATED')),   -- ACC-006
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_accounts_role_id ON accounts (role_id);
+```
+
+```sql
+-- V2__seed_roles.sql   (filename fixed by ARCHITECTURE.md §9)
+INSERT INTO roles (id, code) VALUES (1, 'ADMIN'), (2, 'CUSTOMER');
+```
+
+### 1.2 Design decisions
+
+- **[Decision] Email uniqueness via `CITEXT`, not `LOWER(email)` + a functional index.** ACC-002 requires case-insensitive uniqueness while presumably still wanting to display the address as the user typed it. `citext` does both natively: comparisons and the unique index are case-insensitive, but the stored value keeps its original casing. A functional unique index on `LOWER(email)` would work too, but every query (not just the constraint) would then need to remember to lowercase the predicate — `citext` makes correct behavior the default instead of something every call site has to get right.
+- **[Decision] `roles` as a lookup table, not a `VARCHAR`/enum column on `accounts`.** Only two values exist today (§2 of the business rules), so an inline check constraint would also work. A lookup table is still the better call here because `ARCHITECTURE.md` §9 already commits to seeding it via `V2__seed_roles.sql` as reference data — the design has to match that commitment — and it keeps `accounts` in 3NF (role name isn't repeated on every row).
+- **`status` as a `CHECK`-constrained `VARCHAR`, not a lookup table.** Unlike roles, ACC-006 fixes this to exactly two values with no seed-data commitment anywhere in the architecture doc, and nothing suggests a status will ever need its own attributes. A second lookup table here would be a table for the sake of a table — a `CHECK` constraint gives the same integrity guarantee with less machinery.
+- **Primary key is `UUID`, not `BIGSERIAL`.** `identity.proto`'s `GetUserRequest`/`UserResponse` already use `string user_id` — a `BIGSERIAL` would force a numeric↔string conversion at the gRPC boundary for no benefit. `gen_random_uuid()` is native to Postgres (13+), no extension required.
+- **No email-verification or password-reset columns.** Explicitly out of scope (BUSINESS_RULES.md §8) — adding `verified_at` or `reset_token` columns now would be building for a feature that was deliberately excluded.
+
+### 1.3 Indexing & performance
+
+- `accounts.email` (unique, via `citext`) is the only index login needs — ACC-003/ACC-005 are both single-row lookups by email.
+- `idx_accounts_role_id` supports an Administrator's "list all admins" / role-filtered support queries (ACC-011) without a sequential scan.
+- No index on `status` — filtering by status is always combined with the email lookup on login (already covered) or is a full admin listing (small table, sequential scan is fine at this data volume); adding one now would be indexing for a query pattern nothing in the business rules asks for.
+
+### 1.4 Data integrity
+
+- ACC-002 (case-insensitive uniqueness) — `citext` unique constraint.
+- ACC-006 (exactly one of two statuses) — `CHECK` constraint, not app-layer-only validation.
+- ACC-010 (system must never have zero Administrators) is **not** enforceable as a static SQL constraint (it's a property of the *current row set*, not a single row) — this is deliberately left to the application/deployment process: exactly one Administrator account must exist before the system accepts its first request. **This document does not invent a seed email/password** — real login credentials are a deployment-time secret, not something to bake into version control. A `V3__seed_initial_admin.sql`-style migration is the right mechanism, but its actual values are an ops decision outside this document's scope.
+
+### 1.5 Replication
+
+- Runs on the shared Postgres 17 instance per `ARCHITECTURE.md` §9 (separate database, separate Flyway history table from `orders`).
+- Production recommendation: primary + at least one async streaming replica, standard Postgres HA.
+- **[Decision] Auth-path reads must go to the primary, not a replica.** ACC-007 says a Deactivated account can't log in or place orders — if a replica lag window let a stale "ACTIVE" row be read just after an Administrator deactivated that account, the gate ACC-007 depends on would silently fail open. Replicas are fine for ACC-011 admin/support lookups, where a few hundred milliseconds of staleness has no security consequence, but not for the login path or for the `GetUser` call order-service makes to gate ORD-001.
+
+---
+
+## 2. catalog-service — MongoDB, database `catalog`
+
+### 2.1 Schema (collection `products`)
+
+```js
+db.createCollection("products", {
+  validator: {
+    $jsonSchema: {
+      bsonType: "object",
+      required: ["_id", "name", "description", "category", "unitPrice", "stockCount", "status", "createdAt", "updatedAt"],
+      properties: {
+        _id:         { bsonType: "string" },                       // UUID, matches proto's string product_id
+        name:        { bsonType: "string", minLength: 1 },          // CAT-001, CAT-005 (not unique)
+        description: { bsonType: "string" },                        // CAT-001
+        category:    { bsonType: "string", minLength: 1 },          // CAT-004
+        unitPrice:   { bsonType: "decimal", minimum: 0, exclusiveMinimum: true }, // CAT-002 — Decimal128, never double
+        stockCount:  { bsonType: "int", minimum: 0 },                // CAT-003
+        status:      { enum: ["ACTIVE", "DEACTIVATED"] },            // CAT-008
+        createdAt:   { bsonType: "date" },
+        updatedAt:   { bsonType: "date" }
+      }
+    }
+  },
+  validationLevel: "strict",
+  validationAction: "error"
+});
+
+db.products.createIndex({ status: 1, category: 1 });                 // browse: active products by category (CAT-007/CAT-008)
+db.products.createIndex(
+  { name: "text", description: "text" },
+  { weights: { name: 5, description: 1 } }                            // search performance
+);
+```
+
+### 2.2 Design decisions
+
+- **[Decision] `category` is a plain indexed string field, not a separate `categories` collection.** CAT-004 only requires that a product belong to exactly one category — nothing in the business rules describes categories having their own attributes, an admin-managed lifecycle, or being read independently of a product. A reference collection would be solving a problem the business rules don't have. If category management becomes its own bounded concept later, that's new scope (mirrors how `BUSINESS_RULES.md` §8 treats out-of-scope items), not something to speculatively build now.
+- **`$jsonSchema` validator instead of relying on app-layer validation alone.** MongoDB has no `CHECK` constraint, but a collection validator is the direct equivalent — `unitPrice > 0` (CAT-002) and `stockCount >= 0` (CAT-003) are enforced at the database, not just in Kotlin code that a future migration script or manual `db.products.updateMany` could bypass.
+- **`unitPrice` is `Decimal128`, never a JS/BSON `double`.** Doubles cannot represent currency exactly (binary floating point); `Decimal128` is MongoDB's fixed-point type and is the only correct choice for money, matching `NUMERIC` on the Postgres side.
+- **No `deletedAt` / hard-delete path.** CAT-009 forbids deleting a product that's ever been ordered, and GEN-003 says all records are retained indefinitely — the schema has no delete mechanism at all, only the `status` field. A product that's genuinely never been ordered can be removed with a plain document delete; that's an app-layer authorization decision (has it ever appeared in an `order_items` row?), not a schema concern.
+- **No optimistic-concurrency/version field.** Handled instead by the atomic update in §2.3 — see there for why a version field would be redundant, not just omitted for simplicity.
+
+### 2.3 Concurrency & data integrity (GEN-001)
+
+Stock changes are single-document atomic updates, which is what actually makes the "last unit" race in GEN-001 correct without a multi-document transaction or an app-level lock:
+
+```js
+// ReserveStock
+db.products.findOneAndUpdate(
+  { _id: productId, status: "ACTIVE", stockCount: { $gte: quantity } },
+  { $inc: { stockCount: -quantity }, $set: { updatedAt: new Date() } }
+)
+// null result => not found, deactivated, or insufficient stock; catalog-service reports failure (ORD-007), no partial effect.
+```
+
+```js
+// ReleaseStock (ORD-012, on cancellation)
+db.products.findOneAndUpdate(
+  { _id: productId },
+  { $inc: { stockCount: quantity }, $set: { updatedAt: new Date() } }
+)
+```
+
+**[Decision] `ReleaseStock` is deliberately *not* conditioned on `status: "ACTIVE"`.** If a product is deactivated after an order containing it was placed, cancelling that order must still restore the correct stock count (ORD-012 doesn't carve out an exception for deactivated products) — conditioning the release on active status would silently under-count stock on a product that could later be reactivated.
+
+### 2.4 Search & browse performance
+
+- `{status:1, category:1}` compound index covers the two things every browse/search query filters on: CAT-008 (deactivated products are fully hidden) and category filtering.
+- Text index on `name`/`description` covers product search (CAT-001 fields), weighted toward name matches.
+- No index for a default sort order (e.g. price ascending) — the business rules don't specify one ("search relevance/ranking beyond basic browsing" is explicitly out of scope, §8), so none is added speculatively.
+
+### 2.5 Replication
+
+- Must run as a proper MongoDB replica set (1 primary + 2 secondaries minimum) in any environment beyond the single dev container in `docker-compose.yml` — required for automatic failover.
+- **[Decision] `ReserveStock`/`ReleaseStock` and any stock-authoritative read must use read preference `primary`.** CAT-011 makes catalog-service the sole authority on stock — a stale secondary read during checkout could show stock as available when it's actually exhausted. Pure browse/list reads can use `secondaryPreferred` for load distribution; a few hundred milliseconds of staleness there is a UX nicety issue, not a CAT-011 violation, since the actual reservation is always re-checked atomically against the primary regardless of what the browse UI showed.
+
+---
+
+## 3. order-service — PostgreSQL, database `orders`
+
+### 3.1 Schema
+
+```sql
+-- V1__create_order_schema.sql
+CREATE TABLE order_status (
+    id    SMALLINT PRIMARY KEY,
+    code  VARCHAR(10) NOT NULL UNIQUE           -- ORD-010
+);
+
+CREATE TABLE orders (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id      UUID NOT NULL,             -- reference to identity-service account; no cross-DB FK
+    status_id        SMALLINT NOT NULL REFERENCES order_status(id),
+    total_amount     NUMERIC(12,2) NOT NULL CHECK (total_amount >= 0),   -- ORD-006
+    idempotency_key  VARCHAR(100) NOT NULL UNIQUE,                       -- ORD-009
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_orders_customer_id_created_at ON orders (customer_id, created_at DESC);  -- ORD-013
+
+CREATE TABLE order_items (
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id               UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id             UUID NOT NULL,       -- reference to catalog-service product; no cross-DB FK
+    product_name_snapshot  VARCHAR(200) NOT NULL,                        -- ORD-005
+    unit_price_snapshot    NUMERIC(12,2) NOT NULL CHECK (unit_price_snapshot > 0), -- ORD-005
+    quantity               INTEGER NOT NULL CHECK (quantity >= 1),       -- ORD-003
+    line_total             NUMERIC(12,2) GENERATED ALWAYS AS (unit_price_snapshot * quantity) STORED,
+    CONSTRAINT uq_order_product UNIQUE (order_id, product_id)            -- ORD-004
+);
+
+CREATE INDEX idx_order_items_order_id ON order_items (order_id);
+```
+
+```sql
+-- V2__seed_order_statuses.sql   (filename fixed by ARCHITECTURE.md §9 / BUSINESS_RULES.md §9)
+INSERT INTO order_status (id, code) VALUES
+  (1, 'PLACED'), (2, 'CONFIRMED'), (3, 'SHIPPED'), (4, 'DELIVERED'), (5, 'CANCELLED');
+```
+
+### 3.2 Design decisions
+
+- **[Decision] `order_items.product_name_snapshot`/`unit_price_snapshot` deliberately duplicate catalog-service data.** This is not a convenience denormalization — ORD-005 states verbatim that the name/price *at order time* must be captured and never change even if the catalog later edits or deactivates that product (CAT-010, CAT-009). Without this duplication, `order_items` would need a live join to catalog-service's database on every historical order view, which is both cross-database (forbidden by the database-per-service rule) and wrong the moment the catalog record changes. This is the one duplication the business rules require by name; see §5 for what's *not* duplicated and why.
+- **[Decision] `orders.total_amount` is a stored column, computed and written once by the application, not derived at read time from `SUM(order_items.line_total)`.** Strict normalization would compute it on every read via a join+aggregate. That's the wrong tradeoff here: order detail/list reads (ORD-013) happen far more often than order writes, and — critically — an order's line items are never edited after placement (only `status` changes, per ORD-010/ORD-011), so there is no update-anomaly risk of `total_amount` drifting from its line items after the one write that creates both. Caching the aggregate is a standard, safe DBA tradeoff precisely because the source rows are immutable.
+- **`idempotency_key` has a DB-level `UNIQUE` constraint, not just the Redis cache.** `ARCHITECTURE.md` §9 explicitly calls Redis "cache, not source of truth" with a 24h TTL. ORD-009 doesn't say duplicate orders are acceptable after 24 hours — the Redis key is a fast-path check to avoid even attempting a duplicate insert, but the Postgres unique constraint is what actually makes ORD-009 hold indefinitely.
+- **`uq_order_product UNIQUE (order_id, product_id)` enforces ORD-004 at the database, not only in application code** — "wanting more of a product means a larger quantity, not a second line item" is exactly what this constraint makes impossible to violate even by a bug elsewhere in the code.
+- **No `cancellation_reason`, no `payment_*` columns.** Not asked for by ORD-011/ORD-012, and payment is explicitly out of scope (§8).
+- **`ON DELETE CASCADE` on `order_items.order_id`** is a safety-net FK action, not a feature in active use — GEN-003 means orders are never deleted, so this cascade is never actually expected to fire; it exists so that *if* an order row were ever removed (e.g. a future data-correction script), it can't leave orphaned line items behind.
+
+### 3.3 Indexing & performance
+
+- `idx_orders_customer_id_created_at` covers ORD-013's actual access pattern — "my orders, newest first" — as a single index scan, no sort step needed.
+- `idx_order_items_order_id` covers fetching an order's line items for detail views.
+- No index on `status_id` alone — nothing in the business rules describes an admin "all Cancelled orders" query; if that becomes a real requirement, add one then rather than guessing at it now.
+
+### 3.4 Replication
+
+- Same physical Postgres 17 instance as `identity`, separate database and Flyway history (`ARCHITECTURE.md` §9).
+- Primary handles all writes. `ORD-013` history reads may use an async replica — a few hundred milliseconds of staleness on a customer's own order list is a minor UX issue, not a correctness violation, unlike identity's active/deactivated gate.
+- **Flagged, not asserted:** BUSINESS_RULES.md/ARCHITECTURE.md don't state an RPO for order data. Given orders are the most business-critical durable record in this system (the sole record of what was sold, at what price, even without payment integration), I'd recommend at least one synchronous standby for the `orders` write path in production — but this is a recommendation for the business/ops owner to confirm, not something I'm treating as already decided.
+
+---
+
+## 4. notification-service — MongoDB, database `notifications`
+
+### 4.1 Schema (collection `notifications`)
+
+```js
+db.createCollection("notifications", {
+  validator: {
+    $jsonSchema: {
+      bsonType: "object",
+      required: ["_id", "accountId", "orderId", "type", "createdAt"],
+      properties: {
+        _id:       { bsonType: "string" },
+        accountId: { bsonType: "string" },              // NTF-003 owner — reference only, see §5
+        orderId:   { bsonType: "string" },               // reference only
+        type:      { enum: ["ORDER_PLACED", "ORDER_CANCELLED"] },  // NTF-001, NTF-002
+        message:   { bsonType: "string" },                // optional, composed by the consumer from `type` — not a live join, see §5
+        createdAt: { bsonType: "date" }
+      }
+    }
+  },
+  validationLevel: "strict",
+  validationAction: "error"
+});
+
+db.notifications.createIndex({ accountId: 1, createdAt: -1 });  // NTF-003: "my notifications, newest first"
+```
+
+### 4.2 Design decisions
+
+- **Append-only, no update path.** Nothing in NTF-001..005 describes a notification ever being edited — a placed/cancelled event is recorded once and stands forever (GEN-003). The schema has no `updatedAt`, mirroring that reality instead of copying the mutable-document shape from `products` out of habit.
+- **Single compound index is deliberately the *only* index.** `{accountId, createdAt: -1}` covers NTF-003's one stated query pattern (a customer's own history, newest first; Administrator support lookups use the same shape with a different `accountId`). No text/search index — notification search isn't a stated requirement.
+- See §4.3 (below) for why `message` doesn't duplicate order amount/status.
+
+### 4.3 Replication
+
+- Same replica-set requirement as `catalog` (§2.5).
+- **`secondaryPreferred` read preference is appropriate for all reads here** — unlike catalog's stock authority, no rule requires strong consistency on a notification read; a write, once acknowledged (`w: "majority"`), just needs to never be lost. This is the one place in the system where secondary reads are unambiguously fine for every query, not just some of them.
+- NTF-005 (a failed notification write never blocks the order it followed) is an application/consumer-transaction-boundary property, not a schema one — reinforced here only to note that no cross-database transaction spans `orders` and `notifications`; there is no mechanism in this schema that could couple them even by accident.
+
+---
+
+## 5. Cross-service data duplication register
+
+This is the explicit "check the business first, defend the decision" ledger the task asked for. Every row is a place data crosses a service boundary; everything *not* listed here was considered and rejected.
+
+| Duplicated field | Lives in | Source of truth | Business rule requiring it | Why nothing more is duplicated |
+|---|---|---|---|---|
+| `product_name_snapshot`, `unit_price_snapshot` | `order_items` (order-service) | catalog-service, at order time only | ORD-005, verbatim | No other catalog field (category, description, stock) is copied — no rule ever reads them from an order. |
+| `product_id` | `order_items` | catalog-service | ORD-003 (a line item names one product) | Reference only, not a live join across DBs (forbidden by database-per-service) — a UI needing current catalog data for a product on an old order makes a fresh gRPC `GetProduct` call at read time. |
+| `customer_id` | `orders` | identity-service | ORD-001, ORD-014 | ORD-014 only requires the *reference* to an order's buyer never change — it does not require freezing the customer's name/email onto the order. No profile field is duplicated; a UI showing "placed by Jane Doe" does a `GetUser` call at read time, same reasoning as above. |
+| `accountId` | `notifications` | identity-service | NTF-003 | Reference only, same reasoning as `customer_id` above. |
+| `orderId` | `notifications` | order-service | NTF-001, NTF-002 | Only the reference is stored — no order total or status is duplicated onto the notification. NTF-001–005 never describe a notification needing to display an amount, only that a "placed"/"cancelled" event occurred. |
+| `message` | `notifications` | derived once, at write time, from `type` | NTF-004 (in-system record only) | This is generated text (e.g. "Your order has been placed"), not a synced copy of any other service's mutable field — it never needs to be re-fetched or kept in sync with anything, so it isn't really "duplication" in the coupling sense the task is asking about. |
+
+No account email/name, no product category/description, and no order total are ever copied into another service's database. Every cross-service read that needs current data (not historical, order-time-of-record data) goes through the gRPC contracts already defined in `proto/identity-proto` and `proto/catalog-proto` — that boundary is what keeps these four databases actually decoupled rather than "coupled with extra steps."
+
+---
+
+## 6. Quick reference
+
+| Service | Datastore | Migration tool | Replication (production) | Primary-only reads required for |
+|---|---|---|---|---|
+| identity-service | PostgreSQL (`identity` db) | Flyway | Primary + async standby | Login, `GetUser` (auth-gating reads) |
+| catalog-service | MongoDB (`catalog` db) | Flamingock | Replica set (1 primary + 2 secondaries) | `ReserveStock`, `ReleaseStock`, stock-authoritative reads |
+| order-service | PostgreSQL (`orders` db) | Flyway | Primary + standby (sync standby recommended, unconfirmed RPO) | All writes; order history reads may use a replica |
+| notification-service | MongoDB (`notifications` db) | Flamingock | Replica set (1 primary + 2 secondaries) | None — all reads may use `secondaryPreferred` |
+
+---
+
+## 7. Explicitly not decided here
+
+Stated so nothing below gets silently assumed into existence later, mirroring how `BUSINESS_RULES.md` §8 handles this:
+
+- **Actual seed Administrator credentials (ACC-010).** The migration *mechanism* is designed (§1.4); the actual email/password value is a deployment-time secret, not invented in this document.
+- **Exact production replica topology** (sync vs. async, standby count) beyond the minimums stated — BUSINESS_RULES.md/ARCHITECTURE.md don't state an RPO/RTO, so exact numbers are an ops decision, not guessed here.
+- **A managed category taxonomy for catalog-service.** Current design is a plain indexed string field (§2.2) — a `categories` collection with its own attributes/admin lifecycle is new scope if ever requested, not built speculatively.
+- **`docker-compose.yml` currently defines one Postgres database (`kotlincrud`) and one Mongo database (`kotlincrud`)**, not the four logical databases (`identity`, `orders`, `catalog`, `notifications`) this design and `ARCHITECTURE.md` §9 both assume. Updating compose/init scripts to create the four logical databases is implementation work, not decided or performed by this document — flagging it here so it isn't silently missed.
+
+---
+
+## 8. Traceability to the business rules
+
+Every rule from `BUSINESS_RULES.md` that has a data-modeling consequence is addressed above. Rules with no data-modeling consequence (e.g. ACC-005's identical-error-message requirement, ACC-008/CAT-006's authorization checks, ORD-007's all-or-nothing checkout logic) are correctly **absent** from this document — they're enforced in application code against the schema above, not by the schema itself, and inventing a table/column for them would be modeling business logic as data it isn't.

@@ -1,4 +1,5 @@
 Architecture - Executed
 Business - Executed
 Inline command: Scaffold the project
-Development - Not Executed
+Database-Development - Executed
+Update docker-compose.yml to add the four logical databases

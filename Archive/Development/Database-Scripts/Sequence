@@ -1,0 +1,125 @@
+MiniMart — Stage-3 database proof: run sequence
+
+These scripts create the real schema from Archive/Development/Database in the
+running kotlincrud-postgres / kotlincrud-mongodb containers, then seed and
+verify a set of business scenarios grounded in BUSINESS_RULES.md. They are a
+proof that the design works — not part of the four services' own codebases.
+
+Prerequisite: `docker compose up -d postgres mongodb` from the repo root, and
+both containers healthy.
+
+Run every step below in order. Each step names the exact command. Steps 01–04
+were already executed once (by me, before this became your responsibility) —
+re-run them only if you're starting from a fresh/empty postgres_data or
+mongo_data volume.
+
+--- Schema (identity/orders/catalog/notifications) ---
+
+01  postgres/00_identity_schema.sql       -> identity db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity -v ON_ERROR_STOP=1 < postgres/00_identity_schema.sql
+
+02  postgres/00_orders_schema.sql         -> orders db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d orders -v ON_ERROR_STOP=1 < postgres/00_orders_schema.sql
+
+03  mongo/00_catalog_schema.js            -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/00_catalog_schema.js
+
+04  mongo/00_notifications_schema.js      -> notifications db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet notifications < mongo/00_notifications_schema.js
+
+--- Scenario A: seed the one Administrator (ACC-010) ---
+
+05  postgres/05_scenario_a_admin_bootstrap.sql   -> identity db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity -v ON_ERROR_STOP=1 < postgres/05_scenario_a_admin_bootstrap.sql
+
+--- Scenario B: Administrator populates the catalog (CAT-001..009) ---
+
+06  mongo/06_scenario_b_catalog_seed.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/06_scenario_b_catalog_seed.js
+
+--- Scenario C: customers self-register — Alice, Bilal, Chen (ACC-001..004) ---
+
+07  postgres/07_scenario_c_register_customers.sql   -> identity db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity -v ON_ERROR_STOP=1 < postgres/07_scenario_c_register_customers.sql
+
+--- Scenario D: Alice places an order (ORD-001..009, NTF-001) ---
+    (3 steps, strict order — stock is reserved before the order commits,
+    the notification comes after)
+
+08  mongo/08_scenario_d_alice_reserve_stock.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/08_scenario_d_alice_reserve_stock.js
+
+09  postgres/09_scenario_d_alice_places_order.sql   -> orders db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d orders -v ON_ERROR_STOP=1 < postgres/09_scenario_d_alice_places_order.sql
+
+10  mongo/10_scenario_d_alice_notification.js   -> notifications db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet notifications < mongo/10_scenario_d_alice_notification.js
+
+--- Scenario E: Alice cancels that order (ORD-010..012, NTF-002) ---
+    (3 steps, strict order — stock is released before the status flips,
+    the notification comes after)
+
+11  mongo/11_scenario_e_alice_release_stock.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/11_scenario_e_alice_release_stock.js
+
+12  postgres/12_scenario_e_alice_cancels_order.sql   -> orders db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d orders -v ON_ERROR_STOP=1 < postgres/12_scenario_e_alice_cancels_order.sql
+
+13  mongo/13_scenario_e_alice_notification.js   -> notifications db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet notifications < mongo/13_scenario_e_alice_notification.js
+
+--- Scenario F: Chen places an order, then is deactivated — order history
+    is untouched (ACC-006..008, ORD-014) ---
+    (4 steps, strict order)
+
+14  mongo/14_scenario_f_chen_reserve_stock.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/14_scenario_f_chen_reserve_stock.js
+
+15  postgres/15_scenario_f_chen_places_order.sql   -> orders db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d orders -v ON_ERROR_STOP=1 < postgres/15_scenario_f_chen_places_order.sql
+
+16  mongo/16_scenario_f_chen_notification.js   -> notifications db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet notifications < mongo/16_scenario_f_chen_notification.js
+
+17  postgres/17_scenario_f_chen_deactivated.sql   -> identity db
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity -v ON_ERROR_STOP=1 < postgres/17_scenario_f_chen_deactivated.sql
+
+--- Scenario G: Bilal's checkout is rejected for insufficient stock — no
+    order, no notification (GEN-001, ORD-007, CAT-007) ---
+
+18  mongo/18_scenario_g_bilal_insufficient_stock.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/18_scenario_g_bilal_insufficient_stock.js
+
+--- Scenario H: integrity guardrails — these MUST fail; the failure is the
+    proof (ACC-002, ORD-003, ORD-004, ORD-009, CAT-002, CAT-003) ---
+
+19  postgres/19_scenario_h_integrity_guardrails.sql   -> identity db (switches to orders itself via \c)
+    *** run WITHOUT -v ON_ERROR_STOP=1, unlike every step above ***
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity < postgres/19_scenario_h_integrity_guardrails.sql
+
+20  mongo/20_scenario_h_integrity_guardrails.js   -> catalog db
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/20_scenario_h_integrity_guardrails.js
+    (this one wraps each attempt in try/catch itself and prints PASS/FAIL — no special flag needed)
+
+--- Verification: read-only checks proving every scenario above landed
+    correctly ---
+
+21  postgres/21_checks.sql   -> identity db (switches to orders itself via \c)
+    docker exec -i kotlincrud-postgres psql -U kotlincrud -d identity -v ON_ERROR_STOP=1 < postgres/21_checks.sql
+
+22  mongo/22_checks.js   -> catalog db (reads notifications too via getSiblingDB)
+    docker exec -i kotlincrud-mongodb mongosh -u kotlincrud -p kotlincrud --authenticationDatabase admin --quiet catalog < mongo/22_checks.js
+
+--- Notes ---
+
+- Every UUID/id used across these scripts is a fixed literal (not
+  DB-generated), chosen so scripts in different files/databases can
+  reference the same row without capturing generated values — e.g. Alice is
+  always aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa, her order is always
+  20000000-0000-4000-8000-000000000001.
+- password_hash values are an obvious placeholder string, not real bcrypt
+  hashes — hashing is application-layer and out of scope for a DB-only proof
+  (see Archive/Development/Database §1.4).
+- To start over from scratch: `docker compose down postgres mongodb && docker
+  volume rm kotlin-microservice_postgres_data kotlin-microservice_mongo_data`,
+  then `docker compose up -d postgres mongodb` and run from step 01 again.

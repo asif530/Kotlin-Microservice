@@ -1,0 +1,2 @@
+Resolved:
+mongodb was pinned to mongo:8-jammy, which doesn't exist on Docker Hub (confirmed via `docker manifest inspect`: "no such manifest: docker.io/library/mongo:8-jammy") — `docker compose up` failed outright on the image pull. Switched to mongo:8, which does exist and pulls/starts/passes its healthcheck. Caught by actually running `docker compose up`, not by reading the compose file — the tag looked plausible on paper.
