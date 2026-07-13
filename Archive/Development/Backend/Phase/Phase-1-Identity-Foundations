@@ -1,0 +1,130 @@
+Phase 1 — Identity foundations
+Service: identity-service · PostgreSQL `identity` db
+
+Why first: every other phase needs an authenticate account to act as —
+order-service calls identity-service.GetUser before it will accept a
+checkout (ORD-001), and Kong rejects any protected request before it
+reaches a service at all if the JWT doesn't verify. Nothing else in the
+system can be meaningfully tested without this phase existing first.
+
+Scenarios covered (Archive/Development/Backend/Scenarios): 1, 2, 3, 10.
+
+Conventions used from here on, in every phase file:
+- JSON bodies are camelCase (Jackson default on Spring Boot).
+- IDs are UUID strings. (Generation Strategy)
+- Timestamps are ISO-8601 UTC.
+- Money is a decimal string ("89.99"), never a JSON number — avoids
+  implying binary-float precision, matches NUMERIC/Decimal128 in the DB.
+- Error bodies are a flat envelope: {"error":{"code":"...","message":"..."}}.
+  The `code` is a stable machine-readable string; rule IDs in this doc are
+  for traceability only and are never in the actual payload.
+- Authorization: Bearer <jwt> is shown as the client would send it. Per
+  ARCHITECTURE.md §7, Kong's JWT plugin verifies the signature/expiry
+  before the request ever reaches the service — identity-service only
+  issues the token (login) and everyone else just trusts Kong's forwarded
+  claims. Endpoints marked (admin only) mean Kong (or, until Kong's policy
+  is wired up, the service itself as a stopgap) rejects the caller unless
+  the forwarded role claim is ADMIN — the `roles.code` value actually
+  seeded by the database (Archive/Development/Database §1.1: "INSERT INTO
+  roles (id, code) VALUES (1, 'ADMIN'), (2, 'CUSTOMER')"), not the
+  business-rules prose term "Administrator."
+
+---
+
+## Scenario 10 — system bootstrap (ACC-010)
+
+Not an HTTP endpoint. Exactly one Administrator account must exist before
+the system accepts its first request. Per Archive/Development/Database
+§1.4, this document does not invent a real seed email/password — that's a
+deployment-time secret set via the actual Flyway seed migration at
+implementation time, not fabricated here.
+
+---
+
+## POST /api/auth/register
+
+Scenario 1. ACC-001 (email, password, full name required), ACC-002 (email
+unique, case-insensitive), ACC-003 (duplicate rejected), ACC-004 (Customer
+role, immediately Active, no verification step).
+
+Request:
+```json
+POST /api/auth/register
+Content-Type: application/json
+
+{
+  "email": "alice.nguyen@example.test",
+  "password": "correct-horse-battery-staple",
+  "fullName": "Alice Nguyen"
+}
+```
+
+Response — 201 Created:
+```json
+{
+  "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "email": "alice.nguyen@example.test",
+  "fullName": "Alice Nguyen",
+  "role": "CUSTOMER",
+  "status": "ACTIVE",
+  "createdAt": "2026-07-13T09:00:00Z"
+}
+```
+
+Response — 409 Conflict (ACC-003, email already registered; ACC-002 means
+this also fires for a case-only difference like `ALICE.NGUYEN@EXAMPLE.TEST`):
+```json
+{
+  "error": {
+    "code": "EMAIL_ALREADY_REGISTERED",
+    "message": "An account with this email already exists."
+  }
+}
+```
+
+---
+
+## POST /api/auth/login
+
+Scenarios 2 (success), 3 (failure).
+
+Request:
+```json
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "email": "alice.nguyen@example.test",
+  "password": "correct-horse-battery-staple"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "tokenType": "Bearer",
+  "expiresIn": 3600
+}
+```
+
+Response — 401 Unauthorized (ACC-005: wrong password, or an email that
+isn't registered at all, or a Deactivated account per ACC-007 — all three
+reported with this exact same body, deliberately indistinguishable):
+```json
+{
+  "error": {
+    "code": "INVALID_CREDENTIALS",
+    "message": "Email or password is incorrect."
+  }
+}
+```
+
+---
+
+## Regression check for later phases
+
+Nothing yet to break — this is the first phase. Every phase after this one
+must re-verify: register + login still work unchanged, and the 401 body
+for a bad login never leaks which of the three ACC-005 causes actually
+happened.

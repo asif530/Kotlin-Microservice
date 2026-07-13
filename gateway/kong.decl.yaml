@@ -1,0 +1,272 @@
+_format_version: "3.0"
+_transform: true
+
+# ─────────────────────────────────────────────────────────────────────────
+# MiniMart Kong gateway — DB-less declarative configuration.
+#
+# Traceability:
+#   - Change request:     Archive/Development/Backend/ChangeRequest/Request-001
+#   - Design decisions:   Archive/Architecture/ARCHITECTURE.md §6, §7, §11
+#   - Endpoint inventory: Archive/Development/Backend/Phase/Phase-1 .. Phase-7
+#   - Rationale/how-to:   Archive/Development/Backend/Implementation/Gateway
+#
+# This file is the single source of truth for gateway routing/security —
+# per ARCHITECTURE.md §6, Kong runs DB-less: no separate Kong Postgres
+# schema, this YAML *is* the config, reviewable in a PR like any other code.
+#
+# One placeholder in this file is NOT resolved by Kong itself:
+# `__IDENTITY_DEV_PUBLIC_KEY__` under `consumers[].jwt_secrets[].rsa_public_key`
+# is substituted at container start by gateway/docker-entrypoint.sh from the
+# contents of gateway/keys/identity-dev-public-key.pem. See that script and
+# the implementation guide for why (Kong's own declarative-config loader has
+# no "read this file path" field type — verified against Kong 3.x docs — so
+# a tiny render step is the honest way to keep the real key out of this
+# checked-in template while still wiring it in at runtime).
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── identity-service (PostgreSQL `identity` db) ──────────────────────────
+  - name: identity-service
+    url: http://identity-service:8081
+    routes:
+
+      - name: identity-auth-register
+        methods: ["POST", "OPTIONS"]
+        paths: ["/api/auth/register"]
+        strip_path: false
+        # No jwt plugin: ARCHITECTURE.md §7 — "you can't present a token
+        # before you have one." Phase-1 confirms no Authorization header on
+        # this request.
+
+      - name: identity-auth-login
+        methods: ["POST", "OPTIONS"]
+        paths: ["/api/auth/login"]
+        strip_path: false
+        # No jwt plugin, same reasoning as register. Gets its own tighter
+        # rate-limit override below (ARCHITECTURE.md §7: "tighter limits
+        # applied to /api/auth/login specifically to slow credential-stuffing").
+        plugins:
+          - name: rate-limiting
+            config:
+              policy: redis
+              redis: &redis-conn
+                host: redis
+                port: 6379
+                # Local-dev-only credential — matches the password already
+                # hardcoded for the `redis` service in docker-compose.yml
+                # (existing project convention, not a new secret introduced
+                # here). See implementation guide for what a real deployment
+                # must do instead.
+                password: kotlincrud
+                database: 1   # separate logical Redis DB from app-level
+                               # caching (DB 0), per ARCHITECTURE.md §9
+              minute: 5          # judgment call — see implementation guide
+              limit_by: ip       # no consumer exists yet pre-login; IP is the
+                                 # only identity available, which is also the
+                                 # correct axis for slowing credential-stuffing
+              fault_tolerant: true
+              hide_client_headers: false
+
+      - name: identity-users-me
+        methods: ["GET", "PATCH", "OPTIONS"]
+        paths: ["/api/users/me"]
+        strip_path: false
+        plugins:
+          - &jwt-verify
+            name: jwt
+            config:
+              key_claim_name: iss   # identity-service must set `iss` = the
+                                    # consumer `key` below ("identity-service")
+                                    # on every token it signs — see consumers:
+              claims_to_verify:
+                - exp               # ARCHITECTURE.md §7: verify signature *and* expiry
+              run_on_preflight: false   # browsers never attach Authorization
+                                        # (or any custom header) to a CORS
+                                        # preflight OPTIONS request, so the
+                                        # jwt plugin must not demand a token
+                                        # on one, or preflight to every
+                                        # protected route would fail closed.
+                                        # Actual GET/POST/etc calls are
+                                        # unaffected and still verified.
+
+      - name: identity-users-by-id
+        methods: ["GET", "OPTIONS"]
+        # admin only (enforced by identity-service itself using Kong's
+        # forwarded role claim — Kong verifies identity, not authorization;
+        # see implementation guide "What Kong does NOT enforce")
+        #
+        # Path is a UUID pattern, not the generic `[^/]+` you'd first reach
+        # for: Kong 3.x's router does not support regex look-around
+        # (`(?!me$)`), which is what would otherwise be needed to keep this
+        # route from also matching /api/users/me — confirmed the hard way,
+        # see Archive/Issues/Gateway0. Phase-1 fixes IDs as UUID strings
+        # project-wide, so a UUID-shaped path both sidesteps the /me
+        # collision and is a more precise match than a wildcard.
+        paths: ["~/api/users/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+      - name: identity-users-status
+        methods: ["PATCH", "OPTIONS"]
+        paths: ["~/api/users/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/status$"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+      - name: identity-users-role
+        methods: ["PATCH", "OPTIONS"]
+        paths: ["~/api/users/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/role$"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+  # ── catalog-service (MongoDB `catalog` db) ────────────────────────────────
+  - name: catalog-service
+    url: http://catalog-service:8082
+    routes:
+
+      - name: catalog-products-create
+        methods: ["POST", "OPTIONS"]
+        paths: ["/api/products"]
+        strip_path: false
+        # admin only (Phase-3: "Authorization: Bearer <jwt for admin>")
+        plugins:
+          - *jwt-verify
+
+      - name: catalog-products-list
+        methods: ["GET", "OPTIONS"]
+        paths: ["/api/products"]
+        strip_path: false
+        # No jwt plugin: Phase-3 CAT-006 — "Customers/public can browse
+        # and search." Same path as catalog-products-create above, but a
+        # different HTTP method, so Kong routes them independently.
+
+      - name: catalog-product-detail
+        methods: ["GET", "OPTIONS"]
+        # UUID-shaped path pattern — see identity-users-by-id above for why
+        # (avoids a Kong 3.x router limitation around regex look-around).
+        paths: ["~/api/products/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"]
+        strip_path: false
+        # No jwt plugin — same public-browsing rule as the list endpoint
+        # (Phase-3: GET /api/products/{id} shown with no Authorization header).
+
+      - name: catalog-product-update
+        methods: ["PATCH", "OPTIONS"]
+        paths: ["~/api/products/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"]
+        strip_path: false
+        # admin only (Phase-4)
+        plugins:
+          - *jwt-verify
+
+      - name: catalog-product-status
+        methods: ["PATCH", "OPTIONS"]
+        paths: ["~/api/products/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/status$"]
+        strip_path: false
+        # admin only (Phase-4)
+        plugins:
+          - *jwt-verify
+
+      - name: catalog-product-delete
+        methods: ["DELETE", "OPTIONS"]
+        paths: ["~/api/products/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"]
+        strip_path: false
+        # admin only (Phase-4)
+        plugins:
+          - *jwt-verify
+
+  # ── order-service (PostgreSQL `orders` db) ────────────────────────────────
+  - name: order-service
+    url: http://order-service:8083
+    routes:
+
+      - name: order-create
+        methods: ["POST", "OPTIONS"]
+        paths: ["/api/orders"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+      - name: order-list
+        methods: ["GET", "OPTIONS"]
+        paths: ["/api/orders"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+      - name: order-detail
+        methods: ["GET", "OPTIONS"]
+        # UUID-shaped path pattern — see identity-users-by-id above for why.
+        paths: ["~/api/orders/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+      - name: order-cancel
+        methods: ["POST", "OPTIONS"]
+        paths: ["~/api/orders/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/cancel$"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+  # ── notification-service (MongoDB `notifications` db) ─────────────────────
+  - name: notification-service
+    url: http://notification-service:8084
+    routes:
+
+      - name: notifications-list
+        methods: ["GET", "OPTIONS"]
+        paths: ["/api/notifications"]
+        strip_path: false
+        plugins:
+          - *jwt-verify
+
+# ─────────────────────────────────────────────────────────────────────────
+# Global plugins (no `route`/`service`/`consumer` scoping below = applied
+# to every request through Kong, including the two JWT-excluded routes).
+# ─────────────────────────────────────────────────────────────────────────
+plugins:
+
+  - name: cors
+    config:
+      # PLACEHOLDER — an obviously-local dev origin, not a real frontend.
+      # Replace with the real frontend origin(s) before any real deployment.
+      # ARCHITECTURE.md §7 requires an explicit allow-list, never "*".
+      origins:
+        - http://localhost:5173
+      methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+      headers: ["Accept", "Authorization", "Content-Type"]
+      credentials: true
+      max_age: 3600
+
+  - name: rate-limiting
+    config:
+      policy: redis
+      redis: *redis-conn   # same Redis connection as the login route's
+                            # override above (anchor defined there, first
+                            # use in document order)
+      minute: 60       # judgment call, not a BUSINESS_RULES.md requirement —
+                       # see implementation guide
+      limit_by: consumer   # falls back to client IP for the two routes with
+                            # no jwt plugin (register), where no consumer is
+                            # ever resolved
+      fault_tolerant: true
+      hide_client_headers: false
+
+# ─────────────────────────────────────────────────────────────────────────
+# Consumer representing identity-service's own signing identity — this is
+# what lets Kong's JWT plugin verify tokens identity-service issues.
+# ─────────────────────────────────────────────────────────────────────────
+consumers:
+
+  - username: identity-service
+    custom_id: identity-service-token-signer
+    jwt_secrets:
+      - key: identity-service   # must equal the `iss` claim identity-service
+                                 # puts in every JWT it signs (see
+                                 # key_claim_name above) — shared contract,
+                                 # documented in the implementation guide
+        algorithm: RS256
+        rsa_public_key: |
+          __IDENTITY_DEV_PUBLIC_KEY__

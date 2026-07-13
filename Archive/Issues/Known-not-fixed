@@ -1,0 +1,6 @@
+  Known, honestly-flagged gaps (not silently glossed over)
+- Kong will 503 every route right now — identity-service/catalog-service/order-service/notification-service aren't in docker-compose.yml yet (correctly out of scope for both
+    agents).
+- Kong's route precedence for /api/orders (list) vs /api/orders/{id} (detail) vs /api/orders/{id}/cancel hasn't been behaviorally verified end-to-end since order-service doesn't
+  exist yet — worth a real check once it does.
+- The dev RSA keypair and Kong's exposed proxy-only-no-TLS setup are both explicitly dev-only, documented as such in both implementation guides.

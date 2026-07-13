@@ -1,0 +1,6 @@
+Req-01:
+Implement Kong gateway.
+Make an implementation guide, change log.
+Write implementation guide in : Archive/Development/Backend/Implementation/Gateway
+Write any change log of existing library change, module add : Archive/Development/Backend/ChangeLog/Gateway
+Write any issues fixed in : Gateway (Archive/Issues/Gateway0)

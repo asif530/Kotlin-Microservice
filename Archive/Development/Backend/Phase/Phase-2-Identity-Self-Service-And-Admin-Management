@@ -1,0 +1,222 @@
+Phase 2 — Identity self-service & admin account management
+Service: identity-service · PostgreSQL `identity` db
+
+Builds on Phase 1's accounts table — no schema change, only new endpoints
+against rows that already exist. Order-service and catalog-service still
+have no dependency on this phase; it's sequenced here (before catalog/order)
+because admin-only write endpoints in Phase 3/4 need ACC-008/009's
+deactivate/reactivate/promote actions to exist for realistic testing —
+e.g. verifying a Deactivated admin can't create a product.
+
+Scenarios covered: 4, 5, 6, 7, 8, 9.
+
+---
+
+## GET /api/users/me
+
+Scenario 4. ACC-011: a Customer can view their own profile.
+
+Request:
+```json
+GET /api/users/me
+Authorization: Bearer <jwt for Alice>
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "email": "alice.nguyen@example.test",
+  "fullName": "Alice Nguyen",
+  "role": "CUSTOMER",
+  "status": "ACTIVE",
+  "createdAt": "2026-07-13T09:00:00Z"
+}
+```
+
+---
+
+## PATCH /api/users/me
+
+Scenario 5. ACC-011: a Customer can update their own profile — name only
+(email is the account's unique identifier and isn't part of this rule;
+changing it is new scope, not built here).
+
+Request:
+```json
+PATCH /api/users/me
+Authorization: Bearer <jwt for Alice>
+Content-Type: application/json
+
+{
+  "fullName": "Alice N. Nguyen"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "email": "alice.nguyen@example.test",
+  "fullName": "Alice N. Nguyen",
+  "role": "CUSTOMER",
+  "status": "ACTIVE",
+  "updatedAt": "2026-07-13T09:15:00Z"
+}
+```
+
+---
+
+## GET /api/users/{id}  (admin only)
+
+Scenario 6. ACC-011: an Administrator can view any account for support.
+A Customer calling this for anyone but themselves is rejected — that's
+scenario 4's endpoint (/me), not this one.
+
+Request:
+```json
+GET /api/users/cccccccc-cccc-4ccc-8ccc-cccccccccccc
+Authorization: Bearer <jwt for admin>
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "email": "chen.park@example.test",
+  "fullName": "Chen Park",
+  "role": "CUSTOMER",
+  "status": "ACTIVE",
+  "createdAt": "2026-07-13T09:05:00Z"
+}
+```
+
+Response — 403 Forbidden (a Customer calling this for another account):
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "You can only view your own account."
+  }
+}
+```
+
+---
+
+## PATCH /api/users/{id}/status  (admin only)
+
+Scenarios 7 and 8. ACC-008: only an Administrator can deactivate or
+reactivate an account. Same endpoint handles both directions — ACC-006
+means status is always exactly one of these two values, so there's no
+separate "reactivate" verb, just the target state.
+
+Request — deactivate Chen (scenario 7):
+```json
+PATCH /api/users/cccccccc-cccc-4ccc-8ccc-cccccccccccc/status
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "status": "DEACTIVATED"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "status": "DEACTIVATED",
+  "updatedAt": "2026-07-13T10:00:00Z"
+}
+```
+
+Request — reactivate Chen later (scenario 8; see
+Archive/Development/Backend/Discussion/Stage-1 Q2 for exactly what this
+does and doesn't change — role is untouched, past orders were never
+altered in the first place, no notification fires):
+```json
+PATCH /api/users/cccccccc-cccc-4ccc-8ccc-cccccccccccc/status
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "status": "ACTIVE"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "status": "ACTIVE",
+  "updatedAt": "2026-07-13T11:00:00Z"
+}
+```
+
+Response — 403 Forbidden (a Customer attempting this on any account,
+including their own — ACC-008: "A Customer cannot deactivate their own
+account or anyone else's."):
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "Only an Administrator can change an account's status."
+  }
+}
+```
+
+---
+
+## PATCH /api/users/{id}/role  (admin only)
+
+Scenario 9. ACC-009: only an existing Administrator can promote another
+account to Administrator — no self-service path.
+
+Request:
+```json
+PATCH /api/users/cccccccc-cccc-4ccc-8ccc-cccccccccccc/role
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "role": "ADMIN"
+}
+```
+
+`ADMIN` here matches the `roles.code` value actually seeded by the
+database (Archive/Development/Database §1.1) — not "ADMINISTRATOR," the
+business-rules prose term for the same role (BUSINESS_RULES.md §2). This
+doc used "ADMINISTRATOR" until the identity-service Phase-1 implementation
+caught the mismatch against the real schema; fixed here to match the
+schema, which is the actual wire-level contract.
+
+Response — 200 OK:
+```json
+{
+  "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "role": "ADMIN",
+  "updatedAt": "2026-07-13T12:00:00Z"
+}
+```
+
+Response — 403 Forbidden (anyone other than an existing Administrator
+calling this, including the account calling it on itself):
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "Only an Administrator can grant the Administrator role."
+  }
+}
+```
+
+---
+
+## Regression check against Phase 1
+
+- POST /api/auth/register and POST /api/auth/login are unchanged — no
+  route, request, or response shape here touches them.
+- A newly Deactivated account (scenario 7) must now fail login with the
+  same 401 INVALID_CREDENTIALS body from Phase 1 (ACC-007 folded into
+  ACC-005's identical-error rule) — verify this explicitly, since it's the
+  first place these two phases actually interact.

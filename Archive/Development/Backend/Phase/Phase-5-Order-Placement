@@ -1,0 +1,181 @@
+Phase 5 — Order placement
+Service: order-service · PostgreSQL `orders` db, calling identity-service
+and catalog-service over gRPC
+
+First phase requiring the two cross-service gRPC calls from
+proto/identity-proto and proto/catalog-proto (GetUser, GetProduct/
+ReserveStock). This is the riskiest integration point in the whole system
+— everything before this phase was a single service; this is the first
+place a request's success depends on two other services being correct and
+reachable. Isolated into its own phase for exactly that reason.
+
+Scenarios covered: 16, 17, 18, 19, 20.
+
+---
+
+## POST /api/orders
+
+Scenario 16 (happy path), 17 (insufficient stock), 18 (idempotent retry).
+
+Server-side flow per request (see ARCHITECTURE.md §4 and
+Archive/Development/Database §2.3/§3):
+1. gRPC IdentityService.GetUser(customerId from the JWT claim) — confirm
+   the account exists and is Active (ORD-001). Deactivated -> reject
+   before touching catalog or orders at all.
+2. For each line item, gRPC CatalogService.GetProduct then ReserveStock —
+   atomic per product, all-or-nothing across the whole order (ORD-007). If
+   any reservation fails, any already-succeeded reservations for this same
+   request must be released again (compensating action) — no partial
+   deduction survives a rejected order.
+3. Only after every reservation succeeds: insert the orders + order_items
+   rows in Postgres, capturing name/price at this moment (ORD-005),
+   status PLACED.
+4. Publish `order.placed` to RabbitMQ after the Postgres commit (Phase 7
+   picks this up).
+
+Request:
+```json
+POST /api/orders
+Authorization: Bearer <jwt for Alice>
+Idempotency-Key: idem-alice-checkout-0001
+Content-Type: application/json
+
+{
+  "items": [
+    { "productId": "10000000-0000-4000-8000-000000000001", "quantity": 2 },
+    { "productId": "10000000-0000-4000-8000-000000000003", "quantity": 1 }
+  ]
+}
+```
+
+Response — 201 Created (ORD-006: totalAmount = 89.99*2 + 129.00*1 = 308.98):
+```json
+{
+  "id": "20000000-0000-4000-8000-000000000001",
+  "customerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "status": "PLACED",
+  "totalAmount": "308.98",
+  "items": [
+    { "productId": "10000000-0000-4000-8000-000000000001", "productName": "Trail Runner 2.0", "unitPrice": "89.99", "quantity": 2, "lineTotal": "179.98" },
+    { "productId": "10000000-0000-4000-8000-000000000003", "productName": "Wireless Earbuds Pro", "unitPrice": "129.00", "quantity": 1, "lineTotal": "129.00" }
+  ],
+  "createdAt": "2026-07-13T14:00:00Z"
+}
+```
+
+Response — 409 Conflict (scenario 17, ORD-007/GEN-001 — Bilal tries to buy
+5 of a zero-stock product; the whole request is rejected, nothing else in
+the request is touched even if other line items had stock):
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_STOCK",
+    "message": "One or more items could not be reserved in the requested quantity.",
+    "details": [
+      { "productId": "10000000-0000-4000-8000-000000000002", "requested": 5, "available": 0 }
+    ]
+  }
+}
+```
+
+Response — 201 Created, same body as the original (scenario 18, ORD-009 —
+retrying with the same Idempotency-Key header returns the already-created
+order instead of creating a second one; no new gRPC reservation calls are
+made on the retry):
+```json
+{
+  "id": "20000000-0000-4000-8000-000000000001",
+  "customerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "status": "PLACED",
+  "totalAmount": "308.98",
+  "items": [ "...same as above, unchanged..." ],
+  "createdAt": "2026-07-13T14:00:00Z"
+}
+```
+
+Response — 401/403 (ORD-001 — no guest checkout, and a Deactivated
+customer cannot place new orders; same identical-error posture as ACC-005
+applies here too, so this doesn't leak *which* account-state problem it
+was beyond "not eligible"):
+```json
+{
+  "error": {
+    "code": "NOT_ELIGIBLE_TO_ORDER",
+    "message": "This account cannot place an order."
+  }
+}
+```
+
+---
+
+## GET /api/orders/{id}
+
+Scenario 19 (own order).
+
+Request:
+```json
+GET /api/orders/20000000-0000-4000-8000-000000000001
+Authorization: Bearer <jwt for Alice>
+```
+
+Response — 200 OK: same shape as the POST /api/orders 201 body above.
+
+Response — 404 Not Found (ORD-013: a Customer can view only their own
+orders — Bilal requesting Alice's order id gets 404, not 403, so the
+order's existence isn't confirmed to someone who shouldn't see it):
+```json
+{
+  "error": {
+    "code": "ORDER_NOT_FOUND",
+    "message": "No order with this id."
+  }
+}
+```
+
+---
+
+## GET /api/orders
+
+Scenarios 19 (own history) and 20 (admin, any customer).
+
+Request (Alice, her own history):
+```json
+GET /api/orders
+Authorization: Bearer <jwt for Alice>
+```
+
+Response — 200 OK:
+```json
+{
+  "items": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "status": "PLACED",
+      "totalAmount": "308.98",
+      "createdAt": "2026-07-13T14:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+Request (Administrator, scenario 20 — support lookup for Chen):
+```json
+GET /api/orders?customerId=cccccccc-cccc-4ccc-8ccc-cccccccccccc
+Authorization: Bearer <jwt for admin>
+```
+
+Response — 200 OK: same shape, Chen's orders. A Customer passing
+`?customerId=` for anyone but themselves gets 403 (ORD-013).
+
+---
+
+## Regression check against Phases 1–4
+
+- Placing an order must call the real GetUser/GetProduct/ReserveStock
+  gRPC methods — a Deactivated account (Phase 2) must be rejected here the
+  same way it's rejected at login, and a Deactivated or nonexistent
+  product (Phase 4) must be rejected the same way an out-of-stock one is.
+- A product edited in Phase 4 after this order was placed must NOT change
+  this order's stored `unitPrice`/`productName` — re-run Phase 4's PATCH
+  on prod-0001 and re-fetch this order to confirm ORD-005 held.

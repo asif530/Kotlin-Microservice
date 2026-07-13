@@ -1,0 +1,29 @@
+Additional Rules (Applies for all stage)
+Ask when confused.
+When unsure read following:
+BUSINESS_RULES.md (Archive/BusinessRules/BUSINESS_RULES.md)
+Database (Archive/Development/Database)
+Sequence (Archive/Development/Database-Scripts/Sequence) for scenarios analyzed to populate db.
+Scenarios (Archive/Development/Backend/Scenarios)
+
+Stage-1
+Upon reviewing business new question arose:
+1. Wont user get notification when orders,cancels an item
+2. What happens when a deactivated user is activated again ?
+Dont answer them in chat. Append them in a file under Archive/Development/Backend/Discussion
+
+As a Senior Software Engineer as per business rules do the following:
+1. Identify full business case scenarios
+2. Break the development process into phases. I already see you have identified several scenarios:
+   Scenario A:  one Administrator (ACC-010)
+   Scenario B: Administrator populates the catalog
+   Scenario C: customers self-register
+   Scenario D: place an order
+   Scenario E: cancels order
+   Scenario F: place an order, then is deactivated — order history is untouched
+   Scenario G: checkout is rejected for insufficient stock — no order, no notification
+3. Based on scenarios create development phases. Write them down under Archive/Development/Backend/Phase
+4. Each phase should satisfy a business flow and should not break earlier flow.
+5. Write down api endpoints, dummy request, dummy response in the respective phase files.
+
+Stage-2 is executed through claude agent.

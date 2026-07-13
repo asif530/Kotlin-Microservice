@@ -1,0 +1,3 @@
+Req-01:
+A user ordered an item. Then user deactivates. User reactivates again.
+ 01) The users order will get checked. If it has available stocks, user will be notified. User will then either cancel or resume the order.

@@ -1,0 +1,38 @@
+Backend-development, Stage-1 — questions raised while reviewing the business rules for API design, answered strictly from what's already locked in BUSINESS_RULES.md. Neither answer required a new business decision — both were already covered, just not phrased as an obvious "yes/no."
+
+---
+
+Q1. Won't the user get a notification when they order or cancel an item?
+
+Two different things are easy to conflate here, so keep them separate:
+
+1. Service-to-service: order-service publishes an `order.placed` /
+   `order.cancelled` event to RabbitMQ, and notification-service consumes
+   it (ARCHITECTURE.md §5). That's internal plumbing between two services
+   — it is not what "notification" means in the business rules, and
+   notification-service is not the notification's audience.
+2. The actual notification (NTF-001/NTF-002): the record that gets
+   created belongs to the buyer's account. NTF-001/002 are unconditional
+   — placing an order always records an "order placed" notification "for
+   that order's buyer," cancelling one always records "order cancelled"
+   the same way. NTF-003 reinforces this: a notification "belongs to
+   exactly one account and is visible only to that account." The user is
+   the recipient, not another service — the record is never skipped.
+
+What doesn't happen is delivery. NTF-004 is explicit and deliberate: this system records notifications as in-system, viewable history only. It does not send email, SMS, or push notifications through any outside channel, because the system has no outbound delivery capability — promising real delivery would be a rule the system couldn't keep. That's listed again in §8 (Explicitly out of scope) as "Real outbound delivery of notifications."
+
+Practically: after Alice places an order, a row exists in notification-service the instant order-service's event is consumed (NTF-001) — but Alice only sees it if she calls GET /api/notifications herself. There is no push, no badge, no email hitting her inbox. So "the user gets notified" is true only in the passive, pull sense — a record they can look up — never in the active, push sense. If that's not the intended user experience, that's a new business requirement (a delivery channel), not something to infer or build around silently — see NTF-004's own [Decision] marker and §8.
+
+---
+
+Q2. What happens when a deactivated user is activated again?
+
+ACC-008 names reactivation directly: "Only an Administrator can deactivate or reactivate an account." So it's a defined action, not an implementation detail I'm inferring.
+
+What it does, precisely, by chaining the rules that already exist:
+- ACC-006: an account has exactly one status at all times, Active or Deactivated. Reactivating sets it back to Active — there's no third "reactivated" state to design for.
+- ACC-007's restrictions (can't log in, can't place new orders) are conditioned on being Deactivated. Once status flips back to Active, those restrictions no longer apply — login and checkout work again, with no rule describing any additional gate (no re-verification, no cooldown, no forced password reset — the latter is out of scope entirely per §8, "Password reset / forgot password").
+- Past order history was never touched by the deactivation in the first place (ACC-007, ORD-014), so reactivation has nothing to "restore" there — it was never hidden or altered.
+- Role is untouched by this action. Deactivate/reactivate (ACC-008) and promote-to-Administrator (ACC-009) are separate, unrelated actions — reactivating a Customer does not change their role, and there's no rule suggesting it would.
+
+One thing genuinely not covered, flagged rather than invented: no rule says reactivation fires a notification. NTF-001/002 only cover order placed/cancelled — reactivation isn't an order event, so by the locked rules it produces no notification. If the business wants the user to know they've been reactivated, that's new scope, not something to quietly add here.

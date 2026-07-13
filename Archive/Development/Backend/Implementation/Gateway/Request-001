@@ -1,0 +1,176 @@
+# Gateway — Kong implementation guide
+
+Source: Archive/Development/Backend/ChangeRequest/Request-001 ("Implement Kong gateway"). Design decisions this implementation follows, not re-derives: Archive/Architecture/ARCHITECTURE.md §6 (external API surface), §7 (security at the gateway), §11 (build layout — reserves `gateway/kong.decl.yaml`). Endpoint inventory: Archive/Development/Backend/Phase/Phase-1 through Phase-7. Change log with per-decision rationale: Archive/Development/Backend/ChangeLog/Gateway. Real issues hit and fixed while building this: Archive/Issues/Gateway0.
+
+Everything below is either a decision ARCHITECTURE.md already locked in (cited as such), or a judgment call this implementation had to make because neither ARCHITECTURE.md nor BUSINESS_RULES.md specifies it (also called out as such, explicitly).
+
+---
+
+## 1. What was built
+
+Two new files carry the actual gateway behavior:
+
+- `gateway/kong.decl.yaml` — Kong's entire routing/security config, in DB-less/declarative form. This is the reserved path from ARCHITECTURE.md §11.
+- `gateway/docker-entrypoint.sh` — a ~40-line render step that runs before Kong starts (see §4 below for why it exists at all).
+
+Plus `gateway/keys/.gitkeep` (placeholder so the directory exists before the real key does) and one change to `docker-compose.yml` (a new `kong` service). Full file-by-file rationale is in the change log; this document is the "what/why/how to verify" narrative.
+
+### 1.1 Routing
+
+Every service+route in `gateway/kong.decl.yaml` traces back to a specific line in a specific Phase file. The full inventory extracted from Phase-1 through Phase-7:
+
+| Method + path | Service | Auth required? | Source |
+|---|---|---|---|
+| `POST /api/auth/register` | identity-service | No | Phase-1 |
+| `POST /api/auth/login` | identity-service | No | Phase-1 |
+| `GET /api/users/me` | identity-service | Yes | Phase-2 |
+| `PATCH /api/users/me` | identity-service | Yes | Phase-2 |
+| `GET /api/users/{id}` (admin only) | identity-service | Yes | Phase-2 |
+| `PATCH /api/users/{id}/status` (admin only) | identity-service | Yes | Phase-2 |
+| `PATCH /api/users/{id}/role` (admin only) | identity-service | Yes | Phase-2 |
+| `POST /api/products` (admin only) | catalog-service | Yes | Phase-3 |
+| `GET /api/products` | catalog-service | **No** (public browsing, CAT-006) | Phase-3 |
+| `GET /api/products/{id}` | catalog-service | **No** (public browsing, CAT-006) | Phase-3 |
+| `PATCH /api/products/{id}` (admin only) | catalog-service | Yes | Phase-4 |
+| `PATCH /api/products/{id}/status` (admin only) | catalog-service | Yes | Phase-4 |
+| `DELETE /api/products/{id}` (admin only) | catalog-service | Yes | Phase-4 |
+| `POST /api/orders` | order-service | Yes | Phase-5 |
+| `GET /api/orders/{id}` | order-service | Yes | Phase-5 |
+| `GET /api/orders` | order-service | Yes | Phase-5 |
+| `POST /api/orders/{id}/cancel` | order-service | Yes | Phase-6 |
+| `GET /api/notifications` | notification-service | Yes | Phase-7 |
+
+18 method+path pairs, expressed as 17 Kong routes (`GET`/`PATCH /api/users/me` share one route object with two methods). This matches ARCHITECTURE.md §6's path-prefix table (`/api/auth/*`,`/api/users/*` → identity-service; `/api/products/*` → catalog-service; `/api/orders/*` → order-service; `/api/notifications/*` → notification-service), just at the granularity Kong actually needs (method + exact/regex path, not a prose prefix rule).
+
+Every service's `url:` in `kong.decl.yaml` (`http://identity-service:8081`, `http://catalog-service:8082`, `http://order-service:8083`, `http://notification-service:8084`) uses the port each service's own `application.yml` declares (`server.port`), and a bare hostname matching that service's directory/module name — the hostname a future docker-compose entry for that service is expected to register on the shared default network, per this file's own existing convention (every other service in `docker-compose.yml` is reachable by its compose service-key name). **Those four services are not yet in `docker-compose.yml`** — adding them is not part of this change (out of scope: "do not touch identity-service/, catalog-service/, order-service/, notification-service/", and no docker-compose entry for them exists to modify either). Until they're added, Kong will return `503 Service Unavailable` for every route (confirmed in §5 below) — that's Kong correctly trying to proxy to a hostname that doesn't resolve yet, not a bug in this config.
+
+### 1.2 What Kong enforces, and what it deliberately does not
+
+Kong verifies **identity** (a request's JWT has a valid RS256 signature from `identity-service`'s keypair and hasn't expired) on every route except the two that can't require one. It does **not** decide **authorization** for `(admin only)` routes — ARCHITECTURE.md §7 describes Kong forwarding `X-Consumer-*`/claims headers and services trusting them, and Phase-1 says explicitly: "Kong (or, until Kong's policy is wired up, the service itself as a stopgap) rejects the caller unless the forwarded role claim is ADMIN" — the `roles.code` value actually seeded by the database, not "ADMINISTRATOR" (the business-rules prose term for the same role), a mismatch Phase-1/Phase-2 originally had and the identity-service implementation caught. No Kong ACL/role-based-access plugin is configured in this change — that's a real scope boundary, not an oversight: enforcing it in Kong would mean encoding BUSINESS_RULES.md's role logic into gateway config, duplicating what each service already has to implement anyway for its own internal consistency (e.g. an admin promoting another admin still needs the service to check the actor's role against its own database, not just trust a header). Each service must check the forwarded role claim itself for every `(admin only)` endpoint.
+
+---
+
+## 2. The JWT/consumer wiring, and why
+
+**Approach chosen: route-level `jwt` plugin, explicit per-route, via a YAML anchor — not a global plugin with an anonymous-consumer bypass.**
+
+Kong has no built-in "apply this plugin to every route except these two" primitive for a global plugin. The two realistic ways to get register/login exempted:
+
+1. Attach the `jwt` plugin directly on every route except the two exempt ones (chosen).
+2. Attach it globally, configure an "anonymous" consumer, and have the two exempt routes override with a bypass.
+
+(1) was chosen because it's the more auditable option in a config file meant to be reviewed as text (ARCHITECTURE.md §6's stated reason for DB-less Kong in the first place): every route's protection status is visible at that route's own definition, with no second file/section to cross-reference to know whether a given route is actually protected. The repetition this would otherwise cause is handled with a plain YAML anchor (`&jwt-verify` defined once, `*jwt-verify` referenced on every other protected route) — this is a YAML-spec feature resolved before Kong ever parses the document, not a Kong-specific mechanism, so it doesn't add any hidden behavior.
+
+**Consumer:** one consumer, `identity-service`, represents identity-service's own signing identity (not an end-user). Its `jwt_secrets` entry:
+
+```yaml
+- key: identity-service
+  algorithm: RS256
+  rsa_public_key: |
+    __IDENTITY_DEV_PUBLIC_KEY__
+```
+
+**The contract this creates with identity-service's login implementation (parallel work item):** every JWT identity-service signs must set the `iss` (issuer) claim to exactly the string `identity-service`, because Kong's `jwt` plugin uses `key_claim_name: iss` (set explicitly in `kong.decl.yaml`, even though it's also the plugin's default, so the requirement is visible in the config itself) to look up which consumer's credential to verify a given token against. If `iss` doesn't equal `identity-service`, Kong will reject the token with 401 even if the signature is otherwise valid.
+
+**The `rsa_public_key` placeholder, and why it isn't literal PEM text:** `gateway/keys/identity-dev-public-key.pem` is the shared-file contract Request-001 specifies, produced by the identity-service RS256 login work. That work may not have completed by the time this gateway change lands. Two options existed here: put a real-looking placeholder key in `kong.decl.yaml` so `docker compose up` "works" immediately, or genuinely couple Kong's ability to start to that file's existence. Request-001 explicitly rules out the first ("do not fabricate a fake key just to make it start"), so this implementation does the second — see §4.
+
+---
+
+## 3. Rate limiting and CORS — the judgment calls
+
+ARCHITECTURE.md §7 mandates *that* rate limiting exists (redis policy, tighter on login) and *that* CORS is an explicit allow-list, never `*`. It does not give numbers or origins, and neither does BUSINESS_RULES.md. These are this implementation's calls, stated plainly as such:
+
+- **Rate limiting: 60 requests/minute globally, 5 requests/minute on `POST /api/auth/login` specifically**, both via `policy: redis` against the same Redis instance already required for caching (ARCHITECTURE.md §9), on logical database index 1 (app-level caching uses index 0, to avoid key collisions — also per §9). 60/min is a round, generous default for a demo app with no real traffic data to size against. 5/min on login is tight enough to meaningfully slow a credential-stuffing script without being so tight that a real user mistyping their password twice gets locked out. Neither number reflects a measured requirement — a real deployment should revisit both against actual traffic and threat model.
+- **CORS: a single allowed origin, `http://localhost:5173`** (Vite's default dev server port — an arbitrary but common local frontend dev convention, used here purely as an unambiguous placeholder). This is not a real frontend origin; none exists in this repo yet. It's commented in `kong.decl.yaml` as needing replacement before any real deployment. `credentials: true` is set because a JWT-based auth flow typically needs the browser to send the `Authorization` header cross-origin, which requires explicit credentials support (and, per the CORS spec, rules out ever combining this with a wildcard origin — another reason `origins: ["*"]` was never on the table here, independent of ARCHITECTURE.md's explicit rule against it).
+- **A consequence worth knowing:** the rate-limiting plugin counts every request that reaches a route, including `OPTIONS` preflight requests (needed for CORS — see §4). A browser sending a non-"simple" request (e.g. a JSON `POST` with an `Authorization` header) issues a preflight first, so in practice each real login attempt from a browser consumes 2 of the 5 per-minute allowance, not 1. Not fixed in this change (Kong has no simple declarative way to exempt `OPTIONS` from a route's plugins without a custom Lua plugin) — noted here as a known, minor characteristic of the current config rather than silently ignored.
+
+---
+
+## 4. Why there's a custom entrypoint script at all
+
+Kong's own declarative-config loader (what actually reads `KONG_DECLARATIVE_CONFIG` when `kong start`/`kong docker-start` runs) only accepts literal PEM text for the JWT plugin's `rsa_public_key` field — it has no "read this file path" field type. This was verified against Kong 3.x's own documentation and confirmed empirically: pointing `rsa_public_key` at a bare file path, or leaving a non-PEM placeholder in place, fails `kong config parse` with `invalid key`. The `@path/to/file` shorthand some blog posts and Kong's own `decK` CLI show is a client-side convenience of `decK` specifically (a separate sync tool), not a capability of Kong's own config loader — confirmed by testing the raw file directly against `kong config parse` and by web search turning up no evidence of native support.
+
+Given that, and given Request-001's explicit instruction to reference the real file path rather than fabricate a key, `gateway/docker-entrypoint.sh` is the mechanism that makes "Kong won't start until `gateway/keys/identity-dev-public-key.pem` exists" actually true rather than aspirational:
+
+1. Checks whether `gateway/keys/identity-dev-public-key.pem` (mounted read-only into the container at `/kong/keys/identity-dev-public-key.pem`) exists. If not, prints a clear, specific error to stderr and exits 1 — Kong never starts.
+2. If it exists, renders a copy of `kong.decl.yaml` with that file's contents substituted for the `__IDENTITY_DEV_PUBLIC_KEY__` placeholder (preserving the placeholder line's indentation, so the YAML block-literal stays valid), and points `KONG_DECLARATIVE_CONFIG` at the rendered copy.
+3. `exec`s the official `kong:3.x` image's own `/docker-entrypoint.sh kong docker-start` — chaining into the image's real startup logic rather than replacing it (`kong docker-start` is not a real subcommand of the `kong` binary on its own; see Archive/Issues/Gateway0 for how that was found).
+
+This was fully exercised, not just written and assumed to work — see §5.
+
+---
+
+## 5. How to run and verify locally
+
+### 5.1 Prerequisites this change does not yet satisfy
+
+`docker compose up kong` alone will not produce a working gateway that actually proxies real requests, because:
+
+- **`gateway/keys/identity-dev-public-key.pem` does not exist yet.** Kong will refuse to start (by design — see §4) until the parallel identity-service RS256 login work produces it. `docker compose logs kong` will show exactly why.
+- **identity-service, catalog-service, order-service, and notification-service are not yet in `docker-compose.yml`.** Adding them is out of scope for this change. Once they exist, Kong will start proxying real requests to them; until then, every route returns `503` (Kong reaching a hostname with nothing listening), which is the expected, correct behavior of this config given the current state of the rest of the repo — not a defect in it.
+
+### 5.2 Commands
+
+```bash
+# Bring up Kong (and the Redis it needs for rate limiting):
+docker compose up -d redis kong
+
+# Watch it come up / diagnose if it doesn't:
+docker compose logs -f kong
+
+# Once it's healthy:
+docker compose ps kong
+```
+
+### 5.3 What was actually verified, and the real results
+
+This config was not just written — it was validated against a real `kong:3.9.3` container (pulled and run in this session) at every stage, including full `docker compose up`/`docker compose down` cycles against this repo's actual `docker-compose.yml`. Four real bugs were found and fixed this way; see Archive/Issues/Gateway0 for the details. The final, fixed state:
+
+- **`kong config parse gateway/kong.decl.yaml` against the checked-in file as-is: fails**, with `rsa_public_key: invalid key`. This is expected and correct — the checked-in file still has the `__IDENTITY_DEV_PUBLIC_KEY__` placeholder, not a real key, precisely because no real key exists yet. This is not a broken config; it's the file in the state described in §4.
+- **`kong config parse` against the *rendered* config (placeholder substituted with a real, throwaway RSA public key generated purely for this test and discarded afterward — never committed): `parse successful`.**
+- **A full `docker compose up -d redis kong` with no key present: Kong exits with the fatal error from §4, container status `Restarting`, exactly as designed** — confirmed directly against the compose service definition, not just a manual `docker run`.
+- **The same command with a throwaway test key placed at `gateway/keys/identity-dev-public-key.pem`: Kong starts, reports `healthy`, and proxies real requests.** Confirmed:
+  - `curl http://localhost:8000/api/users/me` (no token) → `401 {"message":"Unauthorized"}` — JWT plugin correctly rejecting an unauthenticated request to a protected route.
+  - `curl -X POST http://localhost:8000/api/auth/register` (no token, no backend service running yet) → `503` — correctly *not* rejected for lack of a token (the excluded-route design works), failing only because nothing is listening at `identity-service:8081` yet.
+  - `curl -X OPTIONS http://localhost:8000/api/users/me` with `Origin: http://localhost:5173` → clean `200` with `Access-Control-Allow-Origin: http://localhost:5173` and no auth required — CORS preflight works correctly even on a JWT-protected route.
+  - 7 rapid `POST` requests to `/api/auth/login` → the first 5 got through to the (absent) backend (`503`), requests 6 and 7 got `429` — the redis-backed rate limit is real, not just declared.
+  - `curl http://localhost:8001/status` from the host → connection refused — confirms the admin API is genuinely not reachable from outside the Docker network, matching the decision in the change log.
+
+**Example: rejected vs. accepted, once identity-service's login work lands.**
+
+```bash
+# Before identity-service issues a real token — rejected:
+curl -i http://localhost:8000/api/users/me
+# HTTP/1.1 401 Unauthorized
+# {"message":"Unauthorized"}
+
+# After a real login (once identity-service's RS256 signing work lands):
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"..."}' | jq -r .token)
+
+curl -i http://localhost:8000/api/users/me \
+  -H "Authorization: Bearer $TOKEN"
+# HTTP/1.1 200 OK
+# { ...Alice's profile... }
+```
+
+This second half of the example (a real login producing a real token Kong accepts) could not be executed end-to-end in this session, because identity-service has no controllers yet (only a bare Spring Boot skeleton exists in this repo as of this change) and the signing keypair doesn't exist. It's included as the exact command sequence to run once both land, not as a claim that it was run.
+
+---
+
+## 6. Dev-placeholder vs. what a real deployment needs to change
+
+Explicitly, so nothing here is mistaken for a production-ready decision:
+
+| This implementation | What a real deployment needs instead |
+|---|---|
+| `cors.origins: [http://localhost:5173]` | The actual frontend's real origin(s). This placeholder will reject every real browser request from a real frontend until changed. |
+| Plain HTTP on port 8000, no TLS | Real TLS termination at Kong (cert from a real CA/ACME flow) — ARCHITECTURE.md §7 explicitly defers this; not attempted here even as a self-signed stand-in, since a fake cert setup adds complexity without adding real security and wasn't asked for. |
+| Redis password (`kotlincrud`) inline in `kong.decl.yaml` | A secrets manager or Kong Vault reference. This matches the password already hardcoded for the same Redis instance elsewhere in `docker-compose.yml` — an existing project-wide local-dev convention, not a new one introduced here — but it's equally not appropriate beyond local dev in either place. |
+| `gateway/keys/identity-dev-public-key.pem` (once the parallel work item creates it) | A key explicitly named/labelled as a dev key should never be the production signing key. Production key material belongs in a secrets manager, provisioned separately from anything checked into or mounted from this repo's working tree. |
+| Rate limits (60/min, 5/min on login) | Numbers based on real traffic/threat-model analysis, not this implementation's placeholder defaults. |
+| Admin API (8001) unpublished, but still listening inside the container with no authentication configured | If the admin API is ever needed (e.g. for `kong health`-style tooling beyond the built-in healthcheck), it should get its own auth (Kong supports this) rather than relying purely on "not published" as the only control. |
+| No mTLS between Kong and the four backend services | ARCHITECTURE.md §13 already lists this as an explicitly deferred roadmap item (Consul Connect, once Consul is actually in the stack) — not attempted here, consistent with that. |
+
+**Explicitly noted but deferred, not silently changed:** ARCHITECTURE.md §7's network-boundary language ("only Kong is reachable from outside") implies that, in a fully hardened setup, postgres/mongodb/rabbitmq/redis/jaeger/prometheus/grafana shouldn't publish host ports either. This change does not touch any of their existing `ports:` entries in `docker-compose.yml` — doing so would break every other developer's ability to point a local DB client, RabbitMQ management UI, or Grafana dashboard directly at these containers during local development, which is a materially bigger, cross-cutting change than "add a gateway." Flagged here as a real gap between the stated architecture and the current state of `docker-compose.yml`, left for a deliberate, separate hardening pass.

@@ -10,6 +10,14 @@ protobuf-java = "4.35.1"
 grpc-java = "1.82.1"
 grpc-kotlin = "1.4.3"
 flamingock = "1.4.4"
+# Verified 2026-07-13 directly against the Maven Central search API
+# (search.maven.org/solrsearch/select?g=io.jsonwebtoken) — 0.12.6 is the
+# newest published release of jjwt-api/jjwt-impl/jjwt-jackson.
+jjwt = "0.12.6"
+# Verified 2026-07-13 the same way (g=org.testcontainers, a=postgresql) —
+# Spring Boot 4.0.6's dependency-management BOM does not pin a testcontainers
+# version on its own, so it's declared explicitly here via the BOM platform.
+testcontainers = "1.21.3"
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
@@ -27,3 +35,7 @@ grpc-netty = { module = "io.grpc:grpc-netty", version.ref = "grpc-java" }
 grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc-java" }
 protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf-java" }
 flamingock-core = { module = "io.flamingock:flamingock-core", version.ref = "flamingock" }
+jjwt-api = { module = "io.jsonwebtoken:jjwt-api", version.ref = "jjwt" }
+jjwt-impl = { module = "io.jsonwebtoken:jjwt-impl", version.ref = "jjwt" }
+jjwt-jackson = { module = "io.jsonwebtoken:jjwt-jackson", version.ref = "jjwt" }
+testcontainers-bom = { module = "org.testcontainers:testcontainers-bom", version.ref = "testcontainers" }

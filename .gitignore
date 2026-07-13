@@ -35,3 +35,11 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### identity-service dev RSA keypair ###
+# Generated at startup by RsaKeyPairProvider for local/dev JWT signing (see
+# Archive/Architecture/ARCHITECTURE.md §4/§7). The private key must never
+# leave identity-service, so it is never committed. The paired PUBLIC key at
+# gateway/keys/identity-dev-public-key.pem IS committed on purpose — the Kong
+# gateway work item reads it from that exact path.
+identity-service/keys/

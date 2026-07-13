@@ -2,6 +2,39 @@ spring:
   application:
     name: identity-service
 
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:identity}
+    username: ${DB_USER:kotlincrud}
+    password: ${DB_PASSWORD:kotlincrud}
+
+  jpa:
+    # Flyway (below) is the single owner of schema. Hibernate must never
+    # attempt to create/alter DDL itself.
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # The `identity` database in the shared dev Postgres container
+    # (kotlincrud-postgres) already has V1/V2's exact schema applied by hand
+    # (Archive/Development/Database-Dev/postgres/00_identity_schema.sql), with
+    # no Flyway history table. baseline-on-migrate only activates when Flyway
+    # finds a non-empty schema with no history table — on a genuinely fresh
+    # database (a clean container, or the Testcontainers-backed integration
+    # test) it is a no-op and V1/V2 run normally from scratch. baseline-version
+    # 2 tells Flyway "treat V1 and V2 as already applied" for that one
+    # pre-provisioned dev database, which is accurate since its schema is
+    # identical to what V1/V2 produce.
+    baseline-on-migrate: true
+    baseline-version: 2
+    baseline-description: "pre-existing dev schema (identical to V1+V2)"
+
 server:
   port: 8081
 
@@ -10,3 +43,36 @@ management:
     web:
       exposure:
         include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+identity:
+  security:
+    password:
+      # BCrypt work factor. 12 is a widely-used, deliberately slow default;
+      # externalized so it can be tuned per environment without a code change.
+      bcrypt-strength: ${IDENTITY_BCRYPT_STRENGTH:12}
+    jwt:
+      issuer: ${IDENTITY_JWT_ISSUER:identity-service}
+      # Also the login response's `expiresIn` field (Phase-1 doc example: 3600).
+      expiration-seconds: ${IDENTITY_JWT_EXPIRATION_SECONDS:3600}
+      key-size: ${IDENTITY_JWT_KEY_SIZE:2048}
+      # Local to identity-service, gitignored — see RsaKeyPairProvider kdoc.
+      # Relative to this module's working directory (identity-service/), i.e.
+      # `./gradlew :identity-service:bootRun` from the repo root.
+      private-key-path: ${IDENTITY_JWT_PRIVATE_KEY_PATH:keys/identity-dev-private-key.pem}
+      # Fixed path contract with the (separate) Kong gateway work item —
+      # resolves to <repo-root>/gateway/keys/identity-dev-public-key.pem.
+      public-key-export-path: ${IDENTITY_JWT_PUBLIC_KEY_EXPORT_PATH:../gateway/keys/identity-dev-public-key.pem}
+
+logging:
+  level:
+    com.minimart.identity: INFO

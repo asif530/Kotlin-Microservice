@@ -1,0 +1,101 @@
+Phase 6 — Order cancellation
+Service: order-service · PostgreSQL `orders` db, calling catalog-service
+over gRPC (ReleaseStock)
+
+Purely additive on top of Phase 5 — placing an order (POST /api/orders)
+is untouched. This phase adds one new state transition on rows that
+already exist.
+
+Scenarios covered: 21, 22, 23.
+
+---
+
+## POST /api/orders/{id}/cancel
+
+Scenario 21 (happy path), 22 (rejected attempts).
+
+Server-side flow: gRPC CatalogService.ReleaseStock for each line item
+(ORD-012, restores the quantities regardless of the product's current
+status — see Archive/Development/Database §2.3), then update the order's
+status to CANCELLED, then publish `order.cancelled` to RabbitMQ after
+commit (Phase 7 picks this up).
+
+Request (Alice cancels her own Placed order):
+```json
+POST /api/orders/20000000-0000-4000-8000-000000000001/cancel
+Authorization: Bearer <jwt for Alice>
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "20000000-0000-4000-8000-000000000001",
+  "status": "CANCELLED",
+  "updatedAt": "2026-07-13T15:00:00Z"
+}
+```
+
+Response — 409 Conflict (scenario 22a, ORD-011 — cancelling an order
+that's already Cancelled):
+```json
+{
+  "error": {
+    "code": "ORDER_NOT_CANCELLABLE",
+    "message": "This order is CANCELLED and cannot be cancelled again."
+  }
+}
+```
+
+Response — 404 Not Found (scenario 22b, ORD-011 — cancelling an order
+that isn't the caller's; same reasoning as Phase 5's GET /api/orders/{id},
+existence isn't confirmed to someone who doesn't own it):
+```json
+{
+  "error": {
+    "code": "ORDER_NOT_FOUND",
+    "message": "No order with this id."
+  }
+}
+```
+
+---
+
+## Scenario 23 — deactivation doesn't touch order history
+
+Not a new endpoint — this is Phase 2's PATCH /api/users/{id}/status
+(deactivate) applied to a customer who already has orders from Phase 5,
+proving ORD-014/ACC-007 hold once both phases coexist.
+
+Request sequence:
+```json
+POST /api/orders                                    (Phase 5, Chen buys prod-0004)
+PATCH /api/users/{chenId}/status  {"status":"DEACTIVATED"}   (Phase 2)
+GET /api/orders/{chenOrderId}     Authorization: Bearer <jwt for admin>
+```
+
+Response to the final GET — 200 OK, completely unchanged by the
+deactivation in between:
+```json
+{
+  "id": "20000000-0000-4000-8000-000000000002",
+  "customerId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "status": "PLACED",
+  "totalAmount": "94.99",
+  "items": [
+    { "productId": "10000000-0000-4000-8000-000000000004", "productName": "Trail Runner 2.0", "unitPrice": "94.99", "quantity": 1, "lineTotal": "94.99" }
+  ],
+  "createdAt": "2026-07-13T14:30:00Z"
+}
+```
+
+---
+
+## Regression check against Phase 5
+
+- Re-run Phase 5's GET /api/orders for Alice after cancelling — the
+  order's `status` field must now read CANCELLED everywhere it's returned
+  (single-order GET and the list GET), with no other field changed.
+- Re-run Phase 3/4's GET /api/products/10000000-...-0001 and ...-0003 —
+  stockCount must be back to its pre-order value (25 and 40) after the
+  cancellation's ReleaseStock call, exactly as proved non-interactively in
+  Database-Scripts step 11.

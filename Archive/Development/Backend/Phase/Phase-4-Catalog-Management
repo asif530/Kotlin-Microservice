@@ -1,0 +1,125 @@
+Phase 4 — Catalog management
+Service: catalog-service · MongoDB `catalog` db
+
+Purely additive on top of Phase 3's products collection — no new fields,
+only new mutation endpoints against rows that already exist.
+
+Scenarios covered: 13, 14, 15.
+
+---
+
+## PATCH /api/products/{id}  (admin only)
+
+Scenario 13. CAT-010: changing price/name/description/category affects
+only future orders — orders already placed keep their ORD-005 snapshot
+regardless of what this endpoint does afterward.
+
+Request:
+```json
+PATCH /api/products/10000000-0000-4000-8000-000000000001
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "unitPrice": "84.99"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "10000000-0000-4000-8000-000000000001",
+  "name": "Trail Runner 2.0",
+  "unitPrice": "84.99",
+  "stockCount": 25,
+  "status": "ACTIVE",
+  "updatedAt": "2026-07-13T13:00:00Z"
+}
+```
+
+Note for the phase after this one: an order placed before this call keeps
+`unitPriceSnapshot: "89.99"` on its order_items row — verify this
+explicitly once Phase 5 exists, since it's the first place CAT-010 and
+ORD-005 actually interact.
+
+---
+
+## PATCH /api/products/{id}/status  (admin only)
+
+Scenario 14. CAT-008: an Administrator can deactivate a product; it
+becomes fully hidden from browsing and unorderable regardless of stock —
+distinct from CAT-007's out-of-stock-but-visible state.
+
+Request:
+```json
+PATCH /api/products/10000000-0000-4000-8000-000000000005/status
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "status": "DEACTIVATED"
+}
+```
+
+Response — 200 OK:
+```json
+{
+  "id": "10000000-0000-4000-8000-000000000005",
+  "status": "DEACTIVATED",
+  "updatedAt": "2026-07-13T13:15:00Z"
+}
+```
+
+After this call, GET /api/products/10000000-...-0005 (Phase 3) must
+return 404, and it must be absent from GET /api/products entirely — that's
+the regression check for this endpoint specifically, not just a one-time
+assertion.
+
+---
+
+## DELETE /api/products/{id}  (admin only)
+
+Scenario 15. CAT-009: a product that has been part of at least one placed
+order can never be permanently deleted, only deactivated. A product that
+has never been ordered may be removed outright.
+
+Request — a product with no order history:
+```json
+DELETE /api/products/10000000-0000-4000-8000-000000000099
+Authorization: Bearer <jwt for admin>
+```
+
+Response — 204 No Content.
+
+Request — a product that has been ordered (e.g. prod-0001, once Phase 5's
+order exists referencing it):
+```json
+DELETE /api/products/10000000-0000-4000-8000-000000000001
+Authorization: Bearer <jwt for admin>
+```
+
+Response — 409 Conflict:
+```json
+{
+  "error": {
+    "code": "PRODUCT_HAS_ORDER_HISTORY",
+    "message": "This product has been part of at least one order and can only be deactivated, not deleted."
+  }
+}
+```
+
+This check depends on order-service data that doesn't exist until Phase
+5 — catalog-service has to ask order-service (or a materialized flag kept
+in sync some other way) whether the product ID appears in any order_items
+row. That's a real cross-service question this phase's implementation has
+to answer, not something to gloss over; flagging it here rather than
+guessing at the mechanism, since Archive/Development/Database doesn't
+specify one (CAT-009 is a business rule, not a wire-level design).
+
+---
+
+## Regression check against Phase 3
+
+- GET /api/products and GET /api/products/{id} must reflect every mutation
+  above immediately — a deactivated or edited product's browse-facing
+  fields (name, category, unitPrice, inStock) must never show stale data.

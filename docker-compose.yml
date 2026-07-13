@@ -75,6 +75,49 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── API Gateway ────────────────────────────────────────────────────────────
+  # DB-less/declarative Kong (ARCHITECTURE.md §6/§7): the single external
+  # entry point for identity/catalog/order/notification-service. Config is
+  # gateway/kong.decl.yaml, checked into the repo — no separate Kong Postgres
+  # schema. See Archive/Development/Backend/Implementation/Gateway for the
+  # full write-up, including why the admin API (8001) is deliberately NOT
+  # published here.
+  kong:
+    image: kong:3.9.3
+    container_name: kotlincrud-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      # Admin API stays bound inside the container (0.0.0.0:8001, Kong's
+      # default) for the healthcheck below, but is NOT in `ports:` — per
+      # ARCHITECTURE.md §7 ("only Kong is reachable from outside"), the
+      # Admin API is a control-plane surface, not something local dev needs
+      # published to the host. See implementation guide for the full reasoning.
+    entrypoint: ["sh", "/kong-entrypoint/docker-entrypoint.sh"]
+    volumes:
+      - ./gateway/kong.decl.yaml:/kong/declarative/kong.decl.yaml:ro
+      - ./gateway/keys:/kong/keys:ro
+      - ./gateway/docker-entrypoint.sh:/kong-entrypoint/docker-entrypoint.sh:ro
+    ports:
+      - "8000:8000"   # HTTP proxy — the single external entry point.
+                       # No 8443/TLS yet: ARCHITECTURE.md §7 explicitly defers
+                       # real TLS/ACME; faking a self-signed setup here would
+                       # be worse than honestly not having one yet.
+    depends_on:
+      - redis         # rate-limiting plugin's redis policy; not a blocking
+                       # health-gate (this file doesn't use that convention
+                       # elsewhere either) — the plugin's fault_tolerant: true
+                       # means Kong still proxies if Redis isn't ready yet.
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ─── Distributed Tracing ───────────────────────────────────────────────────
   jaeger:
     image: jaegertracing/all-in-one:1.62

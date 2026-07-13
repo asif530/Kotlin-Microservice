@@ -1,0 +1,154 @@
+Phase 3 — Catalog foundations
+Service: catalog-service · MongoDB `catalog` db
+
+No functional dependency on Phase 1/2 (catalog-service makes no gRPC calls
+to identity-service — CAT-006's admin-only write restriction is enforced
+the same way as identity's admin endpoints, via Kong's forwarded role
+claim). Sequenced after identity so there's already an Administrator token
+to test the admin-only endpoint with.
+
+Scenarios covered: 11, 12.
+
+---
+
+## POST /api/products  (admin only)
+
+Scenario 11. CAT-001 (name, description, category, unit price, stock
+count required), CAT-002 (unit price > 0), CAT-003 (stock count >= 0,
+whole number), CAT-004 (exactly one category), CAT-006 (admin only).
+
+Request:
+```json
+POST /api/products
+Authorization: Bearer <jwt for admin>
+Content-Type: application/json
+
+{
+  "name": "Trail Runner 2.0",
+  "description": "Lightweight trail running shoe, standard fit.",
+  "category": "Footwear",
+  "unitPrice": "89.99",
+  "stockCount": 25
+}
+```
+
+Response — 201 Created:
+```json
+{
+  "id": "10000000-0000-4000-8000-000000000001",
+  "name": "Trail Runner 2.0",
+  "description": "Lightweight trail running shoe, standard fit.",
+  "category": "Footwear",
+  "unitPrice": "89.99",
+  "stockCount": 25,
+  "status": "ACTIVE",
+  "createdAt": "2026-07-13T09:30:00Z"
+}
+```
+
+Response — 400 Bad Request (CAT-002, a zero or negative price):
+```json
+{
+  "error": {
+    "code": "INVALID_PRICE",
+    "message": "unitPrice must be greater than zero."
+  }
+}
+```
+
+Response — 403 Forbidden (a Customer calling this — CAT-006):
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "Only an Administrator can create a product."
+  }
+}
+```
+
+---
+
+## GET /api/products
+
+Scenario 12. CAT-006 (Customers/public can browse and search), CAT-007
+(zero stock is still shown, marked out of stock), CAT-008 (Deactivated
+products are fully excluded, regardless of stock).
+
+Request:
+```json
+GET /api/products?category=Footwear
+```
+
+Response — 200 OK (prod-0002-style zero-stock item included and flagged;
+a Deactivated product like prod-0005 never appears here at all):
+```json
+{
+  "items": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "name": "Trail Runner 2.0",
+      "category": "Footwear",
+      "unitPrice": "89.99",
+      "inStock": true
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "name": "Trail Runner 2.0",
+      "category": "Footwear",
+      "unitPrice": "94.99",
+      "inStock": true
+    }
+  ],
+  "total": 2
+}
+```
+
+`inStock` is a derived boolean (`stockCount > 0`), not the raw count — a
+customer browsing doesn't need the exact number, only whether it's
+orderable right now (CAT-007 says out-of-stock is marked, not that the
+count is published).
+
+---
+
+## GET /api/products/{id}
+
+Scenario 12 (single-item view).
+
+Request:
+```json
+GET /api/products/10000000-0000-4000-8000-000000000002
+```
+
+Response — 200 OK (CAT-007: zero stock, still visible):
+```json
+{
+  "id": "10000000-0000-4000-8000-000000000002",
+  "name": "Insulated Steel Bottle",
+  "description": "750ml double-wall insulated bottle.",
+  "category": "Home & Kitchen",
+  "unitPrice": "24.50",
+  "inStock": false
+}
+```
+
+Response — 404 Not Found (CAT-008: a Deactivated product is treated as if
+it doesn't exist to a browsing customer — not a 403, since its existence
+itself isn't meant to be visible):
+```json
+{
+  "error": {
+    "code": "PRODUCT_NOT_FOUND",
+    "message": "No product with this id."
+  }
+}
+```
+
+---
+
+## Regression check against Phase 1/2
+
+- No identity endpoint's shape changes. The only interaction is the
+  Authorization header on POST /api/products — a Deactivated admin
+  account (Phase 2, scenario 7) must get the same 401 from Kong as any
+  other Deactivated account attempting an authenticated call, before this
+  service ever sees the request.

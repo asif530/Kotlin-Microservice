@@ -1,0 +1,120 @@
+Phase 7 — Notifications
+Service: notification-service · MongoDB `notifications` db, consuming
+RabbitMQ `order.placed` / `order.cancelled` (queue `notification.order-placed`,
+per ARCHITECTURE.md §5)
+
+Last phase because it's a pure consumer of events Phases 5 and 6 already
+produce — nothing here can be built or meaningfully tested before an
+order can actually be placed and cancelled. See
+Archive/Development/Backend/Discussion/Stage-1 Q1 for what this phase
+does and does not do (records only, no outbound delivery — NTF-004).
+
+Scenarios covered: 24, 25, 26, 27, 28.
+
+---
+
+## Scenarios 24, 25 — event consumption (not an HTTP endpoint)
+
+NTF-001: an `order.placed` event triggers a recorded notification.
+NTF-002: an `order.cancelled` event triggers a recorded notification.
+
+Consumed message (illustrative shape, from order-service's publish in
+Phase 5/6 — the exact payload is order-service's contract to define, not
+notification-service's; shown here for traceability only):
+```json
+{
+  "orderId": "20000000-0000-4000-8000-000000000001",
+  "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "eventType": "ORDER_PLACED",
+  "occurredAt": "2026-07-13T14:00:00Z"
+}
+```
+
+Resulting document (matches Archive/Development/Database §4.1 and the
+data already seeded non-interactively in Database-Scripts step 10):
+```json
+{
+  "_id": "40000000-0000-4000-8000-000000000001",
+  "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "orderId": "20000000-0000-4000-8000-000000000001",
+  "type": "ORDER_PLACED",
+  "message": "Your order has been placed.",
+  "createdAt": "2026-07-13T14:00:01Z"
+}
+```
+
+Scenario 28 — NTF-005: if the insert above fails (Mongo unreachable,
+whatever the cause), the message must go to the dead-letter exchange
+(ARCHITECTURE.md §5) rather than being silently dropped or retried
+forever, but this must never reach back into order-service — the order is
+already committed and final by the time this consumer even sees the
+event.
+
+---
+
+## GET /api/notifications
+
+Scenarios 26 (own) and 27 (admin, any account).
+
+Request (Alice, her own history — newest first):
+```json
+GET /api/notifications
+Authorization: Bearer <jwt for Alice>
+```
+
+Response — 200 OK:
+```json
+{
+  "items": [
+    {
+      "id": "40000000-0000-4000-8000-000000000002",
+      "orderId": "20000000-0000-4000-8000-000000000001",
+      "type": "ORDER_CANCELLED",
+      "message": "Your order has been cancelled.",
+      "createdAt": "2026-07-13T15:00:01Z"
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000001",
+      "orderId": "20000000-0000-4000-8000-000000000001",
+      "type": "ORDER_PLACED",
+      "message": "Your order has been placed.",
+      "createdAt": "2026-07-13T14:00:01Z"
+    }
+  ],
+  "total": 2
+}
+```
+
+Request (Administrator, support lookup for Bilal — NTF-003):
+```json
+GET /api/notifications?accountId=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+Authorization: Bearer <jwt for admin>
+```
+
+Response — 200 OK (empty — scenario 17/Database-Scripts step 18 already
+proved Bilal's rejected checkout produced no order and therefore no
+event; NTF-001 only fires on a successfully placed order):
+```json
+{
+  "items": [],
+  "total": 0
+}
+```
+
+A Customer passing `?accountId=` for anyone but themselves gets 403
+(NTF-003), same posture as Phase 5's `?customerId=` on GET /api/orders.
+
+---
+
+## Regression check against Phases 1–6
+
+- Placing and cancelling an order (Phases 5, 6) must still succeed even if
+  this service is entirely down — verify by stopping notification-service
+  and repeating Phase 5/6's happy-path requests; the 201/200 responses
+  must be identical, and no order/order_items row anywhere depends on this
+  service being reachable (NTF-005, and the "database-per-service, no
+  coupling" principle from Archive/Development/Database §0).
+- Once notification-service is back up and the queued events are consumed
+  (or, if using a dead-letter path, manually replayed), GET
+  /api/notifications must reflect exactly the events that were missed —
+  no duplicates, nothing lost.
