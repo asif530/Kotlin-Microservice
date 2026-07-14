@@ -1,7 +1,10 @@
 package com.minimart.identity.web
 
+import com.minimart.identity.domain.exception.AccountNotFoundException
 import com.minimart.identity.domain.exception.EmailAlreadyRegisteredException
+import com.minimart.identity.domain.exception.ForbiddenActionException
 import com.minimart.identity.domain.exception.InvalidCredentialsException
+import com.minimart.identity.domain.exception.UnauthenticatedException
 import com.minimart.identity.web.dto.ErrorBody
 import com.minimart.identity.web.dto.ErrorResponse
 import org.slf4j.LoggerFactory
@@ -11,6 +14,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 
 /**
  * Produces the project-wide {"error":{"code":"...","message":"..."}}
@@ -18,7 +22,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
  * `INTERNAL_ERROR` are not defined by the Phase-1 doc (it only fixes
  * EMAIL_ALREADY_REGISTERED and INVALID_CREDENTIALS) — both are this
  * implementation's own choice, called out here and in the task summary
- * rather than left unstated.
+ * rather than left unstated. Phase-2 adds three more codes the same way:
+ * `FORBIDDEN` is fixed by the Phase-2 doc's own response examples (message
+ * varies per call site — see ForbiddenActionException); `UNAUTHORIZED` and
+ * `ACCOUNT_NOT_FOUND` are not shown by the doc and are this implementation's
+ * own judgment call (see UnauthenticatedException / AccountNotFoundException
+ * kdoc for the reasoning).
  */
 @RestControllerAdvice
 class GlobalExceptionHandler {
@@ -38,6 +47,38 @@ class GlobalExceptionHandler {
         logger.warn("401 INVALID_CREDENTIALS")
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
             ErrorResponse(ErrorBody("INVALID_CREDENTIALS", "Email or password is incorrect.")),
+        )
+    }
+
+    @ExceptionHandler(UnauthenticatedException::class)
+    fun handleUnauthenticated(ex: UnauthenticatedException): ResponseEntity<ErrorResponse> {
+        logger.warn("401 UNAUTHORIZED: {}", ex.message)
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+            ErrorResponse(ErrorBody("UNAUTHORIZED", ex.message ?: "Authentication is required.")),
+        )
+    }
+
+    @ExceptionHandler(ForbiddenActionException::class)
+    fun handleForbiddenAction(ex: ForbiddenActionException): ResponseEntity<ErrorResponse> {
+        logger.warn("403 FORBIDDEN: {}", ex.message)
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
+            ErrorResponse(ErrorBody("FORBIDDEN", ex.message ?: "You are not allowed to perform this action.")),
+        )
+    }
+
+    @ExceptionHandler(AccountNotFoundException::class)
+    fun handleAccountNotFound(ex: AccountNotFoundException): ResponseEntity<ErrorResponse> {
+        logger.warn("404 ACCOUNT_NOT_FOUND: accountId={}", ex.accountId)
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+            ErrorResponse(ErrorBody("ACCOUNT_NOT_FOUND", "No account exists with the given id.")),
+        )
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException::class)
+    fun handleTypeMismatch(ex: MethodArgumentTypeMismatchException): ResponseEntity<ErrorResponse> {
+        logger.warn("400 VALIDATION_ERROR: path variable '{}' is malformed", ex.name)
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(
+            ErrorResponse(ErrorBody("VALIDATION_ERROR", "'${ex.name}' is not a validly formatted value.")),
         )
     }
 

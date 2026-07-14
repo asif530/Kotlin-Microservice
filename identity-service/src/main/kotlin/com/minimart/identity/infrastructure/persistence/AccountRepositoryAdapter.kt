@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
+import java.util.UUID
 
 /**
  * Adapter implementing the domain's outbound port on top of Spring Data
@@ -37,6 +38,8 @@ class AccountRepositoryAdapter(
 
     override fun findByEmail(email: String): Account? = jpaRepository.findByEmail(email)?.toDomain()
 
+    override fun findById(id: UUID): Account? = jpaRepository.findById(id).map { it.toDomain() }.orElse(null)
+
     @Transactional
     override fun save(account: Account): Account {
         // Reference-only load (no SELECT) — role_id is fixed, seeded reference
@@ -64,5 +67,27 @@ class AccountRepositoryAdapter(
             logger.debug("Unique constraint violation persisting account", constraintViolation)
             throw EmailAlreadyRegisteredException(account.email)
         }
+    }
+
+    /**
+     * Loads the managed entity by id and mutates only the fields Phase-2
+     * ever changes (`fullName`, `role`, `status`, `updatedAt`) — `email` is
+     * deliberately left untouched, so this method never needs [save]'s
+     * unique-constraint handling. The `role` reference is only swapped when
+     * it actually changed, to avoid an unnecessary reference-load on every
+     * profile-name-only update (the common case).
+     */
+    @Transactional
+    override fun update(account: Account): Account {
+        val entity = jpaRepository.findById(account.id).orElseThrow {
+            IllegalStateException("Cannot update account ${account.id}: no matching row found")
+        }
+        entity.fullName = account.fullName
+        entity.status = account.status
+        entity.updatedAt = account.updatedAt
+        if (entity.role.id != account.role.dbId) {
+            entity.role = entityManager.getReference(RoleJpaEntity::class.java, account.role.dbId)
+        }
+        return jpaRepository.saveAndFlush(entity).toDomain()
     }
 }

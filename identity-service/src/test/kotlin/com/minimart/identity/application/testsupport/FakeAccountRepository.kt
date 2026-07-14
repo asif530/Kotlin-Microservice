@@ -3,6 +3,7 @@ package com.minimart.identity.application.testsupport
 import com.minimart.identity.domain.exception.EmailAlreadyRegisteredException
 import com.minimart.identity.domain.model.Account
 import com.minimart.identity.domain.port.AccountRepositoryPort
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -13,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 class FakeAccountRepository : AccountRepositoryPort {
 
     private val accountsByLowercaseEmail = ConcurrentHashMap<String, Account>()
+    private val accountsById = ConcurrentHashMap<UUID, Account>()
 
     /** Test hook to simulate a duplicate email slipping past the pre-check (a race). */
     var forceRaceOnNextSave: Boolean = false
@@ -21,6 +23,8 @@ class FakeAccountRepository : AccountRepositoryPort {
 
     override fun findByEmail(email: String): Account? = accountsByLowercaseEmail[email.lowercase()]
 
+    override fun findById(id: UUID): Account? = accountsById[id]
+
     override fun save(account: Account): Account {
         val key = account.email.lowercase()
         if (forceRaceOnNextSave || accountsByLowercaseEmail.containsKey(key)) {
@@ -28,6 +32,13 @@ class FakeAccountRepository : AccountRepositoryPort {
             throw EmailAlreadyRegisteredException(account.email)
         }
         accountsByLowercaseEmail[key] = account
+        accountsById[account.id] = account
+        return account
+    }
+
+    override fun update(account: Account): Account {
+        accountsByLowercaseEmail[account.email.lowercase()] = account
+        accountsById[account.id] = account
         return account
     }
 }
