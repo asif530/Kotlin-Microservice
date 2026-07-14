@@ -54,6 +54,25 @@ check_changerequest_pairing() {
   done
 }
 
+check_taxonomy() {
+  echo "== 4. Top-level taxonomy (Archive/GOVERNANCE.md §2) =="
+  # Keep this list in sync with the taxonomy table in Archive/GOVERNANCE.md §2.
+  # Adding a new top-level Archive/ category on purpose? Follow
+  # Archive/_Templates/NewTaxonomyCategory.md, which updates both places.
+  local known=(Architecture BusinessRules Development Issues Prompts Plan Misc _Templates)
+  local dir name entry seen
+  for dir in Archive/*/; do
+    name="$(basename "$dir")"
+    seen=false
+    for entry in "${known[@]}"; do
+      [ "$name" = "$entry" ] && seen=true && break
+    done
+    if [ "$seen" = false ]; then
+      fail "Archive/$name is not a documented top-level category — see Archive/_Templates/NewTaxonomyCategory.md before adding one on purpose"
+    fi
+  done
+}
+
 check_headers() {
   echo "== 3. Required header block (warn-only — see GOVERNANCE.md §3) =="
   local targets=(
@@ -114,6 +133,7 @@ generate_rule_index() {
 run_check() {
   check_broken_paths
   check_changerequest_pairing
+  check_taxonomy
   check_headers
   echo
   if [ -s "$REPORT" ]; then

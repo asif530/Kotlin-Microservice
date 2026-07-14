@@ -1,6 +1,9 @@
 Gateway — Kong implementation change log
 
-Source: Archive/Development/Backend/ChangeRequest/Request-001. Design constraints: ARCHITECTURE.md §6 (external API surface), §7 (gateway security), §11 (build layout, reserves gateway/kong.decl.yaml). No existing service code touched (identity-service/catalog-service/order-service/notification-service are out of scope — separate work item). No new Gradle module, library, or dependency added to build.gradle.kts/gradle/libs.versions.toml — Kong is a standalone container, not a JVM dependency, so there's nothing to add to the version catalog.
+Source: Archive/Development/Backend/ChangeRequest/Request-001. Design constraints: ARCHITECTURE.md §6 (external API surface), §7 (gateway security), §11 (build layout, reserves gateway/kong.decl.yaml).
+No existing service code touched (identity-service/catalog-service/order-service/notification-service are out of scope — separate work item).
+No new Gradle module, library, or dependency added to build.gradle.kts/gradle/libs.versions.toml — Kong is a standalone container, not a JVM dependency,
+so there's nothing to add to the version catalog.
 
 New files:
 
