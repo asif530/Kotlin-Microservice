@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Structural documentation gate — see Archive/GOVERNANCE.md §5.
+#
+# Not wired in automatically: enable it yourself with
+#   git config core.hooksPath .githooks
+# This only runs the deterministic checks (broken Archive/ path references,
+# orphaned ChangeRequests). It does not judge document content — that's
+# .claude/command/doc-review.md, run on demand or on a schedule.
+
+set -uo pipefail
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+"$REPO_ROOT/scripts/doc-audit.sh" --check
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo
+  echo "pre-commit: doc-audit found structural problems in Archive/ (see above)." >&2
+  echo "Fix them, or if a FAIL is a known false positive (see GOVERNANCE.md §5)," >&2
+  echo "commit with --no-verify after confirming it by hand." >&2
+fi
+
+exit "$status"

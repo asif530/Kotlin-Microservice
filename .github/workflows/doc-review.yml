@@ -1,0 +1,29 @@
+name: Documentation Audit
+
+# Structural documentation gate for Archive/ — see Archive/GOVERNANCE.md §5.
+#
+# Runs scripts/doc-audit.sh --check only: broken Archive/ path references,
+# orphaned ChangeRequests, missing headers. It does NOT run the semantic
+# .claude/command/doc-review.md pass — that needs an LLM/agent and isn't
+# wired into this workflow.
+#
+# Triggerable manually (workflow_dispatch) right now. The recurring schedule
+# is written but deliberately commented out below — cadence (which day,
+# what time) needs an explicit decision before this runs unattended on a
+# timer; see Archive/GOVERNANCE.md §5, "Scheduled review."
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: '17 6 * * 1'   # placeholder: Mondays ~06:17 UTC — pick a real cadence, then uncomment
+
+jobs:
+  doc-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run structural doc audit
+        run: |
+          chmod +x scripts/doc-audit.sh
+          ./scripts/doc-audit.sh --check

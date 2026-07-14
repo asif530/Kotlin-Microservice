@@ -1,8 +1,8 @@
 Unresolved:
 catalog-service and notification-service have the Flamingock dependency wired
-(io.flamingock:flamingock-core:1.4.4, confirmed to exist on Maven Central), but not its Gradle plugin/annotation-processor setup — Flamingock's own quick-start docs still
-use unresolved [VERSION] placeholders, so I didn't want to guess a DSL block that might silently not work. There's a comment in both build files pointing at this before
-real @Change migrations get written.
+(io.flamingock:flamingock-core:1.4.4, confirmed to exist on Maven Central), but not its Gradle plugin/annotation-processor setup — the plugin block itself still hasn't been added to either build.gradle.kts. There's a comment in both build files pointing at this before real @Change migrations get written.
+
+Update (2026-07-14, documentation governance pass): the earlier blocker — Flamingock's own quick-start docs showing a literal unresolved "[VERSION]" placeholder in the `plugins{}` snippet — is resolved. Checked directly against the Gradle Plugin Portal (not just the docs page): `io.flamingock` 1.4.4 is the latest published plugin version there, matching flamingock-core's own version. See `Archive/Plan/plan.md`, "MongoDB Migration Best Practices," for the verified `plugins{}` block, the renamed annotations (`@Change`/`@Apply`/`@Rollback`, package `io.flamingock.api.annotations`), and what's still unconfirmed (an `application.yml` equivalent for Mongock's `migration-scan-package`/`transaction-enabled` keys). What remains open: actually adding the plugin block to both services' `build.gradle.kts` and writing a first real `@Change` migration to prove it end-to-end — neither done in this pass.
 
 Resolved:
 a version-catalog key can't be both a leaf value and a namespace prefix for another dashed key — grpc collided with grpc-kotlin (→ grpc.kotlin), and protobuf collided with protobuf-plugin. Renamed

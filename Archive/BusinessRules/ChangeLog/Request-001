@@ -1,0 +1,17 @@
+BusinessRules — reactivation notification change log
+
+Source: Archive/BusinessRules/ChangeRequest/Request-001. Design constraint: BUSINESS_RULES.md's own revision policy (see its header) — v1.0 is locked and never edited in place; this change lands as a new §10 addendum, not an edit to any ACC-/ORD-/NTF- rule already numbered 001-014/001-005.
+
+Changes to existing files:
+
+- `Archive/BusinessRules/BUSINESS_RULES.md` — added §10 "Addenda", Addendum 1, introducing ACC-012, NTF-006, ORD-015 (reactivation stock-check + notification).
+
+  - **[Decision] New rule IDs (ACC-012, NTF-006, ORD-015), never a reused or renumbered existing ID.** Keeps every prior cross-reference in Phase files, Scenarios, and the Database Design doc pointing at exactly the rule text it always pointed at — an addendum that renumbered anything would silently break those references instead of only adding to them.
+
+  - **[Decision] Composes with ORD-014/ACC-007 rather than replacing them.** ORD-014 and ACC-007 already state that deactivation itself never touches an order's status, stock, or attribution — that stays true. The addendum only adds a new check-and-notify step at *reactivation*, the moment the Customer regains the ability to act on the order that ACC-007 had blocked. Re-deciding what deactivation itself does would have been an edit to a locked v1.0 rule, which the revision policy forbids.
+
+  - **[Decision] Explicitly named as superseding `Archive/Development/Backend/Discussion/Stage-1` Q2's conclusion**, rather than leaving that discussion file's older "not covered, that's new scope" answer looking contradicted with no explanation. The discussion doc itself is left unedited (it's a dated transcript of what was true at that stage, not a living rule) — the addendum states the supersession instead.
+
+New files:
+
+- `Archive/BusinessRules/ChangeLog/Request-001` (this file) — the change record this project's own Development/Backend convention (ChangeRequest → Implementation/ChangeLog → Issues) already established for the Gateway work, retroactively applied here to close the gap where BusinessRules had a ChangeRequest with no matching log, and the rule it requested had never actually been merged into the locked document.

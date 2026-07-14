@@ -57,37 +57,67 @@ This is a **full-stack backend microservice** setup — capable of dual-database
 ### 1. Use a Migration Tool
 Use **Mongock** (the standard for Spring Boot + MongoDB migrations) instead of manual scripts. (Deprecated)
 
+**This project actually uses Flamingock, not Mongock** — Mongock's own maintainers are sunsetting it in favor of Flamingock (its official successor; see Sources). `io.flamingock:flamingock-core:1.4.4` is already wired into `catalog-service` and `notification-service` via the `flamingock` entry in `gradle/libs.versions.toml` (see `Archive/Issues/Library`). Everything below is Flamingock's real API and setup, checked against its current docs and the Gradle Plugin Portal in this session — not Mongock's, and not guessed.
+
 ```kotlin
-// build.gradle.kts
-implementation("io.mongock:mongock-springboot-v3:5.4.4")
-implementation("io.mongock:mongodb-springdata-v4-driver:5.4.4")
+// build.gradle.kts — core dependency already present via the version catalog:
+implementation(libs.flamingock.core)
+
+// Not yet added to this project. Archive/Issues/Library previously flagged the
+// Gradle plugin block as unverifiable because Flamingock's own quick-start docs
+// show a literal unresolved "[VERSION]" placeholder. Checked directly against
+// the Gradle Plugin Portal in this session: "io.flamingock" 1.4.4 is the latest
+// published version there, matching flamingock-core's own version — safe to use.
+plugins {
+    id("io.flamingock") version "1.4.4"
+}
+
+flamingock {
+    community()
+}
 ```
 
 ### 2. Structure Migration Classes
-Each migration is a `@ChangeUnit` class — one class per version, never edited after it runs.
-Flamingock is the new alternative
+Each migration is a `@Change` class — Flamingock's rename of Mongock's `@ChangeUnit` — one class per version, never edited after it runs. The execution/rollback annotations were renamed too: `@Execution` → `@Apply`, `@RollbackExecution` → `@Rollback`. All of these, plus `@EnableFlamingock`, import from `io.flamingock.api.annotations`.
 
-```java
-@ChangeUnit(id = "migration-001-add-user-status", order = "001", author = "dev")
-public class Migration001AddUserStatus {
+```kotlin
+import io.flamingock.api.annotations.Change
+import io.flamingock.api.annotations.Apply
+import io.flamingock.api.annotations.Rollback
+import com.mongodb.client.MongoDatabase
+import com.mongodb.client.model.Updates
+import org.bson.Document
 
-    @Execution
-    public void execute(MongoDatabase db) {
+@Change(id = "migration-001-add-user-status", author = "dev")
+class Migration001AddUserStatus {
+
+    @Apply
+    fun apply(db: MongoDatabase) {
         db.getCollection("users")
-          .updateMany(new Document(), Updates.set("status", "ACTIVE"));
+          .updateMany(Document(), Updates.set("status", "ACTIVE"))
     }
 
-    @RollbackExecution
-    public void rollback(MongoDatabase db) {
+    @Rollback
+    fun rollback(db: MongoDatabase) {
         db.getCollection("users")
-          .updateMany(new Document(), Updates.unset("status"));
+          .updateMany(Document(), Updates.unset("status"))
     }
 }
 ```
 
+Enable Flamingock once, on the service's main application class:
+```kotlin
+import io.flamingock.api.annotations.EnableFlamingock
+import org.springframework.boot.autoconfigure.SpringBootApplication
+
+@EnableFlamingock
+@SpringBootApplication
+class CatalogServiceApplication
+```
+
 ### 3. Key Rules
-- **Never modify** a `@ChangeUnit` after it has been applied — create a new one instead.
-- **Always implement rollback** (`@RollbackExecution`) for every migration.
+- **Never modify** a `@Change` class after it has been applied — create a new one instead.
+- **Always implement rollback** (`@Rollback`) for every migration.
 - **Use additive changes** — add fields with defaults, never drop or rename fields in a single step.
 - **Test on a copy** of production data before applying to prod.
 - **Version your IDs** clearly (`migration-001-`, `migration-002-`) to enforce order.
@@ -105,22 +135,24 @@ public class Migration001AddUserStatus {
 ### 5. Index Management
 Create indexes in migrations, not in `@Document` annotations, to keep control explicit.
 
-```java
-@Execution
-public void execute(MongoDatabase db) {
+```kotlin
+@Apply
+fun apply(db: MongoDatabase) {
     db.getCollection("orders")
       .createIndex(Indexes.ascending("userId", "createdAt"),
-                   new IndexOptions().name("idx_orders_user_date").background(true));
+                   IndexOptions().name("idx_orders_user_date").background(true))
 }
 ```
 
 ### 6. Application Config
 ```yaml
 # application.yml
-mongock:
-  migration-scan-package: com.kotlin.crud.migrations
-  transaction-enabled: false  # MongoDB transactions require replica set
+flamingock:
+  runner-type: application_runner   # confirmed key; runs after the Spring context is fully initialized
 ```
+Mongock's `migration-scan-package` and `transaction-enabled` keys don't have a confirmed Flamingock `application.yml` equivalent as of this check — stage/package location is declared via `@EnableFlamingock(stages = [Stage(location = "...")])` in code instead (see §2). Not invented here; confirm against Flamingock's current docs before relying on either key.
+
+**Sources:** [Flamingock quick start](https://docs.flamingock.io/get-started/quick-start) · [Spring Boot integration](https://docs.flamingock.io/frameworks/springboot-integration/introduction) · [Sunsetting Mongock](https://flamingock.io/blog/sunsetting-mongock/) · [Gradle Plugin Portal: io.flamingock](https://plugins.gradle.org/plugin/io.flamingock)
 
 ---
 

@@ -1,6 +1,6 @@
 # Gateway — Kong implementation guide
 
-Source: Archive/Development/Backend/ChangeRequest/Request-001 ("Implement Kong gateway"). Design decisions this implementation follows, not re-derives: Archive/Architecture/ARCHITECTURE.md §6 (external API surface), §7 (security at the gateway), §11 (build layout — reserves `gateway/kong.decl.yaml`). Endpoint inventory: Archive/Development/Backend/Phase/Phase-1 through Phase-7. Change log with per-decision rationale: Archive/Development/Backend/ChangeLog/Gateway. Real issues hit and fixed while building this: Archive/Issues/Gateway0.
+Source: Archive/Development/Backend/ChangeRequest/Request-001 ("Implement Kong gateway"). Design decisions this implementation follows, not re-derives: Archive/Architecture/ARCHITECTURE.md §6 (external API surface), §7 (security at the gateway), §11 (build layout — reserves `gateway/kong.decl.yaml`). Endpoint inventory: Archive/Development/Backend/Phase/Phase-1-Identity-Foundations through Archive/Development/Backend/Phase/Phase-7-Notifications. Change log with per-decision rationale: Archive/Development/Backend/ChangeLog/Gateway. Real issues hit and fixed while building this: Archive/Issues/Gateway.
 
 Everything below is either a decision ARCHITECTURE.md already locked in (cited as such), or a judgment call this implementation had to make because neither ARCHITECTURE.md nor BUSINESS_RULES.md specifies it (also called out as such, explicitly).
 
@@ -94,7 +94,7 @@ Given that, and given Request-001's explicit instruction to reference the real f
 
 1. Checks whether `gateway/keys/identity-dev-public-key.pem` (mounted read-only into the container at `/kong/keys/identity-dev-public-key.pem`) exists. If not, prints a clear, specific error to stderr and exits 1 — Kong never starts.
 2. If it exists, renders a copy of `kong.decl.yaml` with that file's contents substituted for the `__IDENTITY_DEV_PUBLIC_KEY__` placeholder (preserving the placeholder line's indentation, so the YAML block-literal stays valid), and points `KONG_DECLARATIVE_CONFIG` at the rendered copy.
-3. `exec`s the official `kong:3.x` image's own `/docker-entrypoint.sh kong docker-start` — chaining into the image's real startup logic rather than replacing it (`kong docker-start` is not a real subcommand of the `kong` binary on its own; see Archive/Issues/Gateway0 for how that was found).
+3. `exec`s the official `kong:3.x` image's own `/docker-entrypoint.sh kong docker-start` — chaining into the image's real startup logic rather than replacing it (`kong docker-start` is not a real subcommand of the `kong` binary on its own; see Archive/Issues/Gateway for how that was found).
 
 This was fully exercised, not just written and assumed to work — see §5.
 
@@ -124,7 +124,7 @@ docker compose ps kong
 
 ### 5.3 What was actually verified, and the real results
 
-This config was not just written — it was validated against a real `kong:3.9.3` container (pulled and run in this session) at every stage, including full `docker compose up`/`docker compose down` cycles against this repo's actual `docker-compose.yml`. Four real bugs were found and fixed this way; see Archive/Issues/Gateway0 for the details. The final, fixed state:
+This config was not just written — it was validated against a real `kong:3.9.3` container (pulled and run in this session) at every stage, including full `docker compose up`/`docker compose down` cycles against this repo's actual `docker-compose.yml`. Four real bugs were found and fixed this way; see Archive/Issues/Gateway for the details. The final, fixed state:
 
 - **`kong config parse gateway/kong.decl.yaml` against the checked-in file as-is: fails**, with `rsa_public_key: invalid key`. This is expected and correct — the checked-in file still has the `__IDENTITY_DEV_PUBLIC_KEY__` placeholder, not a real key, precisely because no real key exists yet. This is not a broken config; it's the file in the state described in §4.
 - **`kong config parse` against the *rendered* config (placeholder substituted with a real, throwaway RSA public key generated purely for this test and discarded afterward — never committed): `parse successful`.**

@@ -31,7 +31,7 @@ notification-service's; shown here for traceability only):
 ```
 
 Resulting document (matches Archive/Development/Database §4.1 and the
-data already seeded non-interactively in Database-Scripts step 10):
+data already seeded non-interactively in Database-Dev step 10):
 ```json
 {
   "_id": "40000000-0000-4000-8000-000000000001",
@@ -91,7 +91,7 @@ GET /api/notifications?accountId=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
 Authorization: Bearer <jwt for admin>
 ```
 
-Response — 200 OK (empty — scenario 17/Database-Scripts step 18 already
+Response — 200 OK (empty — scenario 17/Database-Dev step 18 already
 proved Bilal's rejected checkout produced no order and therefore no
 event; NTF-001 only fires on a successfully placed order):
 ```json

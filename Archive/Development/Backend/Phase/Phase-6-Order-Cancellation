@@ -98,4 +98,4 @@ deactivation in between:
 - Re-run Phase 3/4's GET /api/products/10000000-...-0001 and ...-0003 —
   stockCount must be back to its pre-order value (25 and 40) after the
   cancellation's ReleaseStock call, exactly as proved non-interactively in
-  Database-Scripts step 11.
+  Database-Dev step 11.

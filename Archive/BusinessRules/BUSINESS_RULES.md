@@ -130,3 +130,18 @@ Two points where this document and `ARCHITECTURE.md` must agree, called out expl
 2. **Stock authority.** `ARCHITECTURE.md` §4 states catalog-service's `ReserveStock` call is the sole authority on stock, and `order-service` never independently tracks it — this matches CAT-011 and ORD-007/ORD-012 exactly (this document states the business rule; the architecture document states the mechanism).
 
 The old single Java module in this repo is being **discarded**, per your decision — it implements none of the services or rules in this document and is not a starting point for any of them.
+
+---
+
+## 10. Addenda
+
+Per this document's revision policy (see header), v1.0 above is never edited in place — a future business need is always a new, separately numbered entry here, citing the change request that introduced it. See `Archive/BusinessRules/ChangeLog/Request-001` for the change record.
+
+### Addendum 1 — Reactivation notification check
+
+Source: `Archive/BusinessRules/ChangeRequest/Request-001`. Scenario: a Customer places an order (**Placed** status, stock already deducted per ORD-008), the account is later Deactivated (ACC-008), then reactivated.
+
+- **ACC-012.** On reactivation, for each of that account's orders still in **Placed** status, the system checks current stock availability for that order's line items (via Catalog Management, CAT-011) and records a notification (NTF-006) informing the Customer of the outcome.
+- **NTF-006.** The reactivation-check notification (ACC-012) states, per checked order, whether its line items are still fully available. This is a distinct notification type from NTF-001/NTF-002 (order placed/cancelled) — it fires on reactivation, not on a placement or cancellation event.
+- **ORD-015.** Following ACC-012's check, the Customer may explicitly cancel the order (ORD-011/ORD-012 apply unchanged) or take no action to keep it as-is. **[Decision]** This addendum introduces no new order status — ORD-010's fixed status list is unchanged. Keeping the order simply means it remains **Placed**; there is no re-confirmation step, since this document defines no such mechanism.
+- **Note — relationship to ORD-014/ACC-007.** ORD-014 and ACC-007 already establish that deactivation itself never alters an order's status, stock, or attribution — this addendum doesn't change that. It only adds a check-and-notify step at the moment of *reactivation*, the point where the Customer regains the ability to act (place/cancel) that ACC-007 had blocked. This supersedes `Archive/Development/Backend/Discussion/Stage-1` Q2's earlier conclusion ("no rule says reactivation fires a notification... that's new scope, not something to quietly add here") — this addendum is that new scope, now explicitly requested via Request-001.

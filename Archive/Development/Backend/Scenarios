@@ -3,7 +3,7 @@ MiniMart — full business case scenario inventory
 Every scenario below traces to specific rule IDs in BUSINESS_RULES.md. Nothing
 here introduces new business behavior — this is the complete API-surface
 reading of the rules already locked, expanding on the seven scenarios
-(A–G) identified earlier for the database proof (Archive/Development/Database-Scripts/Sequence),
+(A–G) identified earlier for the database proof (Archive/Development/Database-Dev/Sequence),
 which were scoped to what a one-shot data-seeding pass needed, not to the
 full set of things the backend must actually expose. Those seven map onto
 this list as noted below. Phase files under Phase/ group these scenarios
@@ -32,7 +32,7 @@ into a delivery order; this file is the reference they cite back to.
 
 7.  Administrator deactivates an account.
     ACC-006, ACC-007, ACC-008
-    (= Scenario F's identity-side action, Database-Scripts step 17)
+    (= Scenario F's identity-side action, Database-Dev step 17)
 
 8.  Administrator reactivates a previously deactivated account.
     ACC-006, ACC-008 — see Discussion/Stage-1 Q2 for what this does and
@@ -44,13 +44,13 @@ into a delivery order; this file is the reference they cite back to.
 10. System bootstrap — exactly one Administrator exists before any
     customer has registered.
     ACC-010
-    (= Scenario A, Database-Scripts step 05)
+    (= Scenario A, Database-Dev step 05)
 
 --- catalog-service ---
 
 11. Administrator creates a product.
     CAT-001, CAT-002, CAT-003, CAT-004, CAT-006
-    (= Scenario B, Database-Scripts step 06)
+    (= Scenario B, Database-Dev step 06)
 
 12. Anyone browses/searches the catalog — Deactivated products excluded,
     zero-stock products still shown and marked out of stock.
@@ -62,7 +62,7 @@ into a delivery order; this file is the reference they cite back to.
 
 14. Administrator deactivates a product.
     CAT-008
-    (part of Scenario B, Database-Scripts step 06)
+    (part of Scenario B, Database-Dev step 06)
 
 15. Administrator removes a product outright (only ever legal for a
     product that has never been part of any order) vs. attempts to remove
@@ -73,18 +73,18 @@ into a delivery order; this file is the reference they cite back to.
 
 16. Customer places an order with one or more line items (happy path).
     ORD-001, ORD-002, ORD-003, ORD-004, ORD-005, ORD-006, ORD-008, ORD-009
-    (= Scenario D, Database-Scripts steps 08–10)
+    (= Scenario D, Database-Dev steps 08–10)
 
 17. Checkout is rejected because at least one line item can't be fully
     satisfied — the whole order is rejected, nothing is partially
     deducted.
     ORD-007, GEN-001, CAT-007
-    (= Scenario G, Database-Scripts step 18)
+    (= Scenario G, Database-Dev step 18)
 
 18. The same checkout is submitted twice (double-click / network retry) —
     only one order ever exists.
     ORD-009
-    (proved as a guardrail in Scenario H, Database-Scripts step 19)
+    (proved as a guardrail in Scenario H, Database-Dev step 19)
 
 19. Customer views their own orders / order history.
     ORD-013
@@ -94,7 +94,7 @@ into a delivery order; this file is the reference they cite back to.
 
 21. Customer cancels their own order while it's Placed.
     ORD-010, ORD-011, ORD-012
-    (= Scenario E, Database-Scripts steps 11–13)
+    (= Scenario E, Database-Dev steps 11–13)
 
 22. Customer attempts to cancel an order that isn't theirs, or is already
     Cancelled — rejected.
@@ -103,18 +103,18 @@ into a delivery order; this file is the reference they cite back to.
 23. A customer's account is later deactivated — their past orders remain
     exactly as they were, still attributed to them.
     ORD-014, ACC-007
-    (= Scenario F, Database-Scripts steps 14–17)
+    (= Scenario F, Database-Dev steps 14–17)
 
 --- notification-service ---
 
 24. An order is successfully placed — a notification is recorded for the
     buyer.
     NTF-001
-    (part of Scenario D, Database-Scripts step 10)
+    (part of Scenario D, Database-Dev step 10)
 
 25. An order is cancelled — a notification is recorded for the buyer.
     NTF-002
-    (part of Scenario E, Database-Scripts step 13)
+    (part of Scenario E, Database-Dev step 13)
 
 26. Customer views their own notification history.
     NTF-003
