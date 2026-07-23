@@ -52,4 +52,39 @@ interface ProductRepositoryPort {
      * before calling this). Used by DELETE /api/products/{id}.
      */
     fun deleteById(id: UUID)
+
+    /**
+     * Atomically decrements [quantity] from an ACTIVE product's stock, but
+     * only if it has at least that much available (CAT-011: catalog-service
+     * is the sole authority on stock; ORD-008: a successful reservation
+     * reduces stock immediately and permanently). Used by Phase-5's gRPC
+     * `ReserveStock` (order-service's checkout flow).
+     *
+     * Must be a single atomic conditional update at the database level
+     * (Mongo's own per-document atomicity, not a read-then-write from this
+     * adapter) — that's what makes GEN-001 hold under concurrent checkouts
+     * for the same product: two simultaneous callers can never both
+     * successfully reserve more than what's actually available.
+     *
+     * @return true if the reservation succeeded (stock was decremented);
+     *   false if the product doesn't exist, isn't ACTIVE, or doesn't have
+     *   [quantity] available — the caller cannot tell which from this
+     *   boolean alone, matching CAT-008's "Deactivated looks like
+     *   out-of-stock to this call" posture.
+     */
+    fun reserveStock(id: UUID, quantity: Int): Boolean
+
+    /**
+     * Gives back [quantity] to an ACTIVE product's stock — the compensating
+     * action for a reservation that must be undone (Phase-5's per-order
+     * all-or-nothing rollback, ORD-007) or an order cancellation (ORD-012).
+     * No lower-bound condition applies here (unlike [reserveStock]) — adding
+     * stock back can never itself violate CAT-011's non-negative invariant.
+     *
+     * @return true if a matching ACTIVE product was found and updated;
+     *   false if no such product exists. A caller releasing stock for a
+     *   product id it just reserved from should treat `false` here as a
+     *   serious inconsistency worth logging loudly, not a normal outcome.
+     */
+    fun releaseStock(id: UUID, quantity: Int): Boolean
 }

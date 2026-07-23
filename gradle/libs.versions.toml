@@ -10,6 +10,16 @@ protobuf-java = "4.35.1"
 grpc-java = "1.82.1"
 grpc-kotlin = "1.4.3"
 flamingock = "1.4.4"
+# Not independently version-pinned before Phase 5 — io.grpc:grpc-kotlin-stub
+# depends on kotlinx-coroutines-core internally but (per its own published
+# module metadata) does not expose it as an `api` dependency, so it's
+# resolved only on the runtime classpath transitively, not the compile
+# classpath source code needs to reference kotlinx.coroutines.* directly
+# (e.g. `runBlocking` at a suspend/blocking-code boundary). 1.10.2 matches
+# what `./gradlew :identity-service:dependencies` already resolves this to
+# transitively, so declaring it explicitly here doesn't change the resolved
+# version, only makes it visible where source code needs to import it.
+kotlinx-coroutines = "1.10.2"
 # Verified 2026-07-13 directly against the Maven Central search API
 # (search.maven.org/solrsearch/select?g=io.jsonwebtoken) — 0.12.6 is the
 # newest published release of jjwt-api/jjwt-impl/jjwt-jackson.
@@ -34,6 +44,7 @@ grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc-java" }
 grpc-netty = { module = "io.grpc:grpc-netty", version.ref = "grpc-java" }
 grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc-java" }
 protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf-java" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 flamingock-core = { module = "io.flamingock:flamingock-core", version.ref = "flamingock" }
 jjwt-api = { module = "io.jsonwebtoken:jjwt-api", version.ref = "jjwt" }
 jjwt-impl = { module = "io.jsonwebtoken:jjwt-impl", version.ref = "jjwt" }

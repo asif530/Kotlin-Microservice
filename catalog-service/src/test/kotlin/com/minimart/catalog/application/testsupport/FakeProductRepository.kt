@@ -34,4 +34,30 @@ class FakeProductRepository : ProductRepositoryPort {
     override fun deleteById(id: UUID) {
         productsById.remove(id)
     }
+
+    override fun reserveStock(id: UUID, quantity: Int): Boolean {
+        var reserved = false
+        productsById.computeIfPresent(id) { _, product ->
+            if (product.status == ProductStatus.ACTIVE && product.stockCount >= quantity) {
+                reserved = true
+                product.copy(stockCount = product.stockCount - quantity)
+            } else {
+                product
+            }
+        }
+        return reserved
+    }
+
+    override fun releaseStock(id: UUID, quantity: Int): Boolean {
+        var released = false
+        productsById.computeIfPresent(id) { _, product ->
+            if (product.status == ProductStatus.ACTIVE) {
+                released = true
+                product.copy(stockCount = product.stockCount + quantity)
+            } else {
+                product
+            }
+        }
+        return released
+    }
 }

@@ -3,13 +3,16 @@ import com.google.protobuf.gradle.id
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.protobuf)
+    `java-library`
 }
 
 dependencies {
-    implementation(libs.protobuf.kotlin)
-    implementation(libs.grpc.protobuf)
-    implementation(libs.grpc.stub)
-    implementation(libs.grpc.kotlin.stub)
+    // `api`, not `implementation` — see proto/catalog-proto/build.gradle.kts
+    // for why (same fix, same reason, both proto modules had this gap).
+    api(libs.protobuf.kotlin)
+    api(libs.grpc.protobuf)
+    api(libs.grpc.stub)
+    api(libs.grpc.kotlin.stub)
 }
 
 protobuf {

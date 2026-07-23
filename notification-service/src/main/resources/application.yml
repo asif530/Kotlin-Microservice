@@ -2,6 +2,30 @@ spring:
   application:
     name: notification-service
 
+  # Spring Boot 4 split Mongo autoconfiguration into its own module — the
+  # binding prefix is `spring.mongodb`, not the pre-4.0 `spring.data.mongodb`
+  # (see catalog-service's application.yml for the full explanation of why;
+  # confirmed the same way against MongoProperties' actual
+  # @ConfigurationProperties("spring.mongodb") in spring-boot-mongodb-4.0.6).
+  mongodb:
+    # `notifications` (per Archive/Development/Database §4) authenticates
+    # against the shared Mongo container's admin db — same convention as
+    # catalog-service's own `catalog` database.
+    uri: mongodb://${MONGO_USER:kotlincrud}:${MONGO_PASSWORD:kotlincrud}@${MONGO_HOST:localhost}:${MONGO_PORT:27017}/${MONGO_DATABASE:notifications}?authSource=admin
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:kotlincrud}
+    password: ${RABBITMQ_PASSWORD:kotlincrud}
+    virtual-host: ${RABBITMQ_VHOST:kotlincrud}
+    listener:
+      simple:
+        # ARCHITECTURE.md §5: "manual ack" — OrderEventListener acks/nacks
+        # explicitly via the injected Channel, rather than Spring AMQP's
+        # default exception-based auto-ack/requeue behavior.
+        acknowledge-mode: manual
+
 server:
   port: 8084
 
@@ -10,3 +34,25 @@ management:
     web:
       exposure:
         include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+notification:
+  security:
+    jwt:
+      # Shared contract with identity-service's RS256 signing keypair — see
+      # catalog-service/order-service's identical config for the full
+      # rationale.
+      public-key-path: ${NOTIFICATION_JWT_PUBLIC_KEY_PATH:../gateway/keys/identity-dev-public-key.pem}
+
+logging:
+  level:
+    com.minimart.notification: INFO

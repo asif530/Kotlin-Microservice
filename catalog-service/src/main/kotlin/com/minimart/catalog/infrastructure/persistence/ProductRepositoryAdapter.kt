@@ -3,6 +3,10 @@ package com.minimart.catalog.infrastructure.persistence
 import com.minimart.catalog.domain.model.Product
 import com.minimart.catalog.domain.model.ProductStatus
 import com.minimart.catalog.domain.port.ProductRepositoryPort
+import org.springframework.data.mongodb.core.MongoTemplate
+import org.springframework.data.mongodb.core.query.Criteria
+import org.springframework.data.mongodb.core.query.Query
+import org.springframework.data.mongodb.core.query.Update
 import org.springframework.stereotype.Repository
 import java.util.UUID
 
@@ -14,6 +18,7 @@ import java.util.UUID
 @Repository
 class ProductRepositoryAdapter(
     private val mongoRepository: SpringDataProductMongoRepository,
+    private val mongoTemplate: MongoTemplate,
 ) : ProductRepositoryPort {
 
     override fun insert(product: Product): Product = mongoRepository.insert(product.toDocument()).toDomain()
@@ -35,4 +40,20 @@ class ProductRepositoryAdapter(
     override fun update(product: Product): Product = mongoRepository.save(product.toDocument()).toDomain()
 
     override fun deleteById(id: UUID) = mongoRepository.deleteById(id.toString())
+
+    override fun reserveStock(id: UUID, quantity: Int): Boolean {
+        val query = Query(
+            Criteria.where("_id").`is`(id.toString())
+                .and("status").`is`(ProductStatus.ACTIVE.name)
+                .and("stockCount").gte(quantity),
+        )
+        val update = Update().inc("stockCount", -quantity)
+        return mongoTemplate.updateFirst(query, update, ProductDocument::class.java).modifiedCount == 1L
+    }
+
+    override fun releaseStock(id: UUID, quantity: Int): Boolean {
+        val query = Query(Criteria.where("_id").`is`(id.toString()).and("status").`is`(ProductStatus.ACTIVE.name))
+        val update = Update().inc("stockCount", quantity)
+        return mongoTemplate.updateFirst(query, update, ProductDocument::class.java).modifiedCount == 1L
+    }
 }

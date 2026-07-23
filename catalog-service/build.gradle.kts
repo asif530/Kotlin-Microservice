@@ -48,6 +48,10 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:mongodb")
+    // Phase 5's gRPC server methods are `suspend fun`s — tests call them via
+    // `runBlocking` (see identity-service/build.gradle.kts for why this
+    // isn't already transitively visible from grpc-kotlin-stub).
+    testImplementation(libs.kotlinx.coroutines.core)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

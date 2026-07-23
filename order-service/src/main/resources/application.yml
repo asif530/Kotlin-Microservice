@@ -2,6 +2,48 @@ spring:
   application:
     name: order-service
 
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:orders}
+    username: ${DB_USER:kotlincrud}
+    password: ${DB_PASSWORD:kotlincrud}
+
+  jpa:
+    # Flyway (below) is the single owner of schema. Hibernate must never
+    # attempt to create/alter DDL itself.
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Unlike identity-service's `identity` db, `orders` is created empty by
+    # db-init/postgres/01-create-databases.sh (a bare CREATE DATABASE, no
+    # schema pre-applied by hand) — so V1/V2 run normally from a clean
+    # database with no baseline-on-migrate needed.
+
+  data:
+    redis:
+      # ORD-009's idempotency cache (order:idem:{key}). Same Redis instance
+      # already required for Kong's rate-limiting policy (ARCHITECTURE.md
+      # §9) — logical database 0 ("app cache"), distinct from Kong's own
+      # index 1, per that same section's explicit collision-avoidance note.
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:kotlincrud}
+      database: 0
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:kotlincrud}
+    password: ${RABBITMQ_PASSWORD:kotlincrud}
+    virtual-host: ${RABBITMQ_VHOST:kotlincrud}
+
 server:
   port: 8083
 
@@ -10,3 +52,33 @@ management:
     web:
       exposure:
         include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+order:
+  grpc:
+    # Phase-5's two cross-service calls (ARCHITECTURE.md §4). No service
+    # discovery (Consul) is wired anywhere in this project yet — plain
+    # configurable host/port, same convention as every other cross-process
+    # address in this codebase (see GrpcClientProperties kdoc).
+    identity-host: ${IDENTITY_GRPC_HOST:localhost}
+    identity-port: ${IDENTITY_GRPC_PORT:9081}
+    catalog-host: ${CATALOG_GRPC_HOST:localhost}
+    catalog-port: ${CATALOG_GRPC_PORT:9082}
+  security:
+    jwt:
+      # Shared contract with identity-service's RS256 signing keypair — see
+      # catalog-service's identical config for the full rationale.
+      public-key-path: ${ORDER_JWT_PUBLIC_KEY_PATH:../gateway/keys/identity-dev-public-key.pem}
+
+logging:
+  level:
+    com.minimart.order: INFO

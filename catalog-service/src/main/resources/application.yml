@@ -36,6 +36,10 @@ management:
       enabled: true
 
 catalog:
+  grpc:
+    # Internal-only (Phase 5, ARCHITECTURE.md §4): order-service's
+    # GetProduct/ReserveStock/ReleaseStock calls. Never routed through Kong.
+    port: ${CATALOG_GRPC_PORT:9082}
   security:
     jwt:
       # Shared contract with identity-service's RS256 signing keypair (see
