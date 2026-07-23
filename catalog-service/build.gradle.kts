@@ -13,10 +13,19 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-opentelemetry")
+    implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation(libs.grpc.netty)
     implementation(libs.grpc.services)
     implementation(libs.grpc.kotlin.stub)
+
+    // RS256 JWT verification (CAT-006's admin-only gate). catalog-service never signs
+    // tokens — only identity-service holds the private key (RsaKeyPairProvider) — so only
+    // jjwt-api plus the two runtime providers are needed here, same as identity-service's own
+    // choice of jjwt over Nimbus JOSE+JWT (see identity-service/build.gradle.kts).
+    implementation(libs.jjwt.api)
+    runtimeOnly(libs.jjwt.impl)
+    runtimeOnly(libs.jjwt.jackson)
 
     // Mongo schema/data migrations (Flamingock, per Archive/Architecture/ARCHITECTURE.md §9).
     // Only the core library dependency is wired here. Flamingock's Gradle plugin +
@@ -30,7 +39,15 @@ dependencies {
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")
     runtimeOnly("io.micrometer:micrometer-registry-otlp")
 
+    testImplementation(platform(libs.testcontainers.bom))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Spring Boot 4 moved TestRestTemplate out of spring-boot-test into this module (see
+    // identity-service/build.gradle.kts for the same two additions and why they're needed).
+    testImplementation("org.springframework.boot:spring-boot-resttestclient")
+    testImplementation("org.springframework.boot:spring-boot-restclient")
+    testImplementation("org.springframework.boot:spring-boot-testcontainers")
+    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:mongodb")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

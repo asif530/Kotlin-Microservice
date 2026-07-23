@@ -57,7 +57,6 @@ class UserAccountService(
             meterRegistry.counter(METRIC_UPDATE_SELF, "result", "not_found").increment()
             throw AccountNotFoundException(command.callerId)
         }
-
         val updated = accountRepository.update(
             existing.copy(fullName = command.fullName, updatedAt = Instant.now()),
         )

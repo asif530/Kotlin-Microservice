@@ -2,6 +2,20 @@ spring:
   application:
     name: catalog-service
 
+  # Spring Boot 4 split Mongo autoconfiguration out of spring-data's own
+  # namespace into its own module (spring-boot-mongodb) — the binding prefix
+  # is `spring.mongodb`, not the pre-4.0 `spring.data.mongodb` (confirmed
+  # against MongoProperties' actual @ConfigurationProperties("spring.mongodb")
+  # in the spring-boot-mongodb-4.0.6 jar; using the old prefix silently binds
+  # nothing and MongoAutoConfiguration falls back to its own localhost
+  # default instead of erroring).
+  mongodb:
+    # `catalog` (per Archive/Development/Database §2) authenticates against
+    # the shared Mongo container's admin db — same root credential already
+    # used for `identity`'s sibling Postgres instance, no separate
+    # per-service Mongo user exists yet (db-init/mongo/01-create-databases.js).
+    uri: mongodb://${MONGO_USER:kotlincrud}:${MONGO_PASSWORD:kotlincrud}@${MONGO_HOST:localhost}:${MONGO_PORT:27017}/${MONGO_DATABASE:catalog}?authSource=admin
+
 server:
   port: 8082
 
@@ -10,3 +24,29 @@ management:
     web:
       exposure:
         include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+catalog:
+  security:
+    jwt:
+      # Shared contract with identity-service's RS256 signing keypair (see
+      # identity-service's RsaKeyPairProvider kdoc) — catalog-service only
+      # ever reads this file to verify tokens; it never generates or writes
+      # to it. Same repo-relative path convention as identity-service's own
+      # `public-key-export-path`, resolved from this module's working
+      # directory (catalog-service/), i.e. `./gradlew :catalog-service:bootRun`
+      # from the repo root.
+      public-key-path: ${CATALOG_JWT_PUBLIC_KEY_PATH:../gateway/keys/identity-dev-public-key.pem}
+
+logging:
+  level:
+    com.minimart.catalog: INFO
